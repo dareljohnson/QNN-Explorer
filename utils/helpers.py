@@ -12,6 +12,32 @@ def check_gpu():
         print("No GPU found, using CPU.")
         return torch.device("cpu")
 
+# Backbone learning-rate factor by backbone type. Pretrained transformers need a
+# much smaller step than CNNs: at the previous lr*0.1 (=5e-4 at the default
+# lr of 0.005) a DistilBERT backbone's features are destroyed as fast as the
+# head learns, and the loss never leaves chance (ln(3) for 3 classes). Measured
+# on the ArXiv demo: 5e-4 -> flat loss at ~1.09 after 300 steps, 5e-5 and 5e-6
+# -> loss 0.0000 and 100% batch accuracy within 100 steps.
+TRANSFORMER_BACKBONE_LR_FACTOR = 0.01
+DEFAULT_BACKBONE_LR_FACTOR = 0.1
+
+
+def backbone_learning_rate(lr: float, backbone_type: str | None) -> float:
+    """Learning rate for the classical backbone's parameter group.
+
+    Args:
+        lr: the learning rate configured in the UI, used at full strength for
+            the fusion layer, quantum circuit and output head
+        backbone_type: 'transformer', 'cnn', 'gnn', 'regression' or None
+
+    Returns:
+        The learning rate to use for the pretrained backbone.
+    """
+    if (backbone_type or "").lower() == "transformer":
+        return lr * TRANSFORMER_BACKBONE_LR_FACTOR
+    return lr * DEFAULT_BACKBONE_LR_FACTOR
+
+
 def resolve_device(use_gpu_requested: bool) -> torch.device:
     """Pick the device for the model and for batches.
 

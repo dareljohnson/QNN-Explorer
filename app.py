@@ -12,7 +12,7 @@ import joblib
 from datetime import datetime
 from collections import defaultdict
 from torchvision import models, transforms
-from utils.helpers import check_gpu, resolve_device
+from utils.helpers import check_gpu, resolve_device, backbone_learning_rate
 from torch.utils.data import DataLoader
 import matplotlib
 matplotlib.use('Agg')  # headless backend - avoids requiring a GUI/Tk
@@ -1138,7 +1138,10 @@ with tab_train:
                     # This lets us fine-tune the backbone without diverging.
                     backbone = getattr(model, 'classical_backbone', None)
                     if backbone is not None and len(list(backbone.parameters())) > 0:
-                        backbone_lr = lr * 0.1
+                        # Pretrained transformers need a far smaller step than CNNs, otherwise
+                        # fine-tuning destroys the features before the head can learn.
+                        backbone_lr = backbone_learning_rate(
+                            lr, st.session_state.model_config.get('classical_backbone_type'))
                         head_params = [p for n, p in model.named_parameters()
                                        if not n.startswith('classical_backbone.')]
                         optimizer = torch.optim.Adam([
@@ -1414,12 +1417,16 @@ with tab_train:
 
                     _bb = getattr(model, 'classical_backbone', None)
                     if _bb is not None and len(list(_bb.parameters())) > 0:
+                        _backbone_lr = backbone_learning_rate(
+                            lr, st.session_state.model_config.get('classical_backbone_type'))
                         _head_params = [p for n, p in model.named_parameters()
                                         if not n.startswith('classical_backbone.')]
                         optimizer = torch.optim.Adam([
-                            {'params': list(_bb.parameters()), 'lr': lr * 0.1},
+                            {'params': list(_bb.parameters()), 'lr': _backbone_lr},
                             {'params': _head_params, 'lr': lr},
                         ])
+                        st.info(f"Fine-tuning backbone at lr={_backbone_lr:.6f}, "
+                                f"head/quantum at lr={lr:.6f}")
                     else:
                         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 

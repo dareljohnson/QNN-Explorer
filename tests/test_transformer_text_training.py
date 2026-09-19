@@ -125,3 +125,20 @@ def test_resolve_device_honours_the_flag():
     if not torch.cuda.is_available():
         # Requesting a GPU without one must not raise; it must fall back.
         assert resolve_device(True) == torch.device("cpu")
+
+
+# --------------------------------------------------- backbone learning rate
+def test_transformer_backbone_uses_a_much_smaller_step():
+    """lr*0.1 (=5e-4) leaves the loss at chance; lr*0.01 trains cleanly."""
+    from utils.helpers import backbone_learning_rate
+
+    assert backbone_learning_rate(0.005, "Transformer") == pytest.approx(0.00005)
+    assert backbone_learning_rate(0.005, "transformer") == pytest.approx(0.00005)
+    assert backbone_learning_rate(0.005, "Transformer") < 0.005 * 0.1
+
+
+def test_non_transformer_backbones_keep_the_old_step():
+    from utils.helpers import backbone_learning_rate
+
+    for backbone in ("CNN", "GNN", "Regression", None, ""):
+        assert backbone_learning_rate(0.005, backbone) == pytest.approx(0.0005)
