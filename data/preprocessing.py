@@ -352,6 +352,28 @@ def delete_scaler(scaler_name):
         print(f"Deleted scaler metadata: {meta_path}")
 
 # --- Text Extraction from CSV ---
+def encode_classification_labels(labels):
+    """Turn a column of labels into class indices.
+
+    Categorical labels (e.g. 'cs.CV') must be factorized: ``torch.tensor()`` on
+    raw strings fails with "too many dimensions 'str'". Numeric labels are
+    passed through unchanged so regression targets keep their values. Mirrors
+    what ``preprocess_csv`` does for the vector path.
+
+    Args:
+        labels: sequence of labels (strings, ints or floats)
+
+    Returns:
+        (labels_tensor, class_names) -- class_names is None for numeric labels
+    """
+    series = pd.Series(labels)
+    if pd.api.types.is_numeric_dtype(series):
+        return torch.tensor(labels), None
+
+    codes, class_names = pd.factorize(series)
+    return torch.tensor(codes, dtype=torch.long), [str(name) for name in class_names]
+
+
 def extract_text_from_csv(df, text_column, label_column=None, max_samples=None):
     """
     Extract text from a specified column in a DataFrame.

@@ -12,7 +12,7 @@ import joblib
 from datetime import datetime
 from collections import defaultdict
 from torchvision import models, transforms
-from utils.helpers import check_gpu
+from utils.helpers import check_gpu, resolve_device
 from torch.utils.data import DataLoader
 import matplotlib
 matplotlib.use('Agg')  # headless backend - avoids requiring a GUI/Tk
@@ -39,7 +39,7 @@ from utils.run_history_tab import render_run_history_tab
 from utils.metrics import plot_confusion_matrix, calculate_classification_metrics, calculate_regression_metrics
 
 # Import preprocessing functions
-from data.preprocessing import preprocess_image, preprocess_text, preprocess_csv, extract_text_from_csv, MAX_TEXT_LENGTH
+from data.preprocessing import preprocess_image, preprocess_text, preprocess_csv, extract_text_from_csv, MAX_TEXT_LENGTH, encode_classification_labels
 
 # Constants
 SAVED_CONFIG_DIR = "saved_models/configs"
@@ -918,7 +918,15 @@ with tab_data:
                                             # Store tokenized data and labels
                                             st.session_state.loaded_data = tokenized
                                             if labels:
-                                                st.session_state.csv_labels = torch.tensor(labels)
+                                                # Categorical labels (e.g. 'cs.CV') are factorized
+                                                # to class indices; torch.tensor() on raw strings
+                                                # raises "too many dimensions 'str'".
+                                                label_tensor, class_names = encode_classification_labels(labels)
+                                                st.session_state.csv_labels = label_tensor
+                                                if class_names:
+                                                    st.session_state.data_info['class_names'] = class_names
+                                                    st.write(f"Encoded {len(class_names)} label classes: "
+                                                             f"{', '.join(class_names)}")
                                             
                                             # Update data info
                                             st.session_state.data_info['data_type'] = 'Text'
@@ -1020,6 +1028,10 @@ with tab_train:
                         
                         # Use GPU safely
                         use_gpu = st.session_state.model_config.get('use_gpu', False) and torch.cuda.is_available()
+                        # The same flag must decide where the model and batches live. Placing the
+                        # backbone on cuda while the quantum simulator stayed on cpu broke
+                        # validation with "Expected all tensors to be on the same device".
+                        st.session_state.device = resolve_device(use_gpu)
                         if use_gpu and st.session_state.model_config.get('classical_backbone_type', '').lower() == 'transformer':
                             st.warning("Using GPU with Transformer backbone in Streamlit may cause issues. If model fails, try disabling GPU.")
                         
