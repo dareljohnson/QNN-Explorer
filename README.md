@@ -340,6 +340,8 @@ In the **Model Configuration** tab:
 - Choose "State Vector" as the Observation Type
 - Save your configuration with a descriptive name
 
+![Model Configuration for CNN](docs/images/model-configuration.png)
+
 #### 2. Data Preparation
 
 In the **Data** tab:
@@ -350,6 +352,8 @@ In the **Data** tab:
   - **Demo**: Use the built-in demo image dataset (e.g., MNIST Sample)
 - The system will automatically preprocess the images to the correct size for the CNN
 - For classification tasks, ensure your images are organized in labeled folders
+
+![Data Preparation for CNN](docs/images/data-preparation.png)
 
 #### 3. Training
 
@@ -369,6 +373,8 @@ The training metrics will show:
 - Entanglement measures (for State Vector observation)
 - Training time information
 
+![Training CNN Model](docs/images/training.png)
+
 #### 4. Making Predictions
 
 In the **Predict** tab:
@@ -380,6 +386,8 @@ In the **Predict** tab:
   - The output state vector visualization
   - Entanglement metrics
   - Classification results (if applicable)
+
+![Making Predictions with CNN](docs/images/predictions.png)
 
 #### Tips for Image Processing
 
@@ -413,6 +421,8 @@ In the **Model Configuration** tab:
 > **Do this before loading text data.** The Data tab's text pipeline uses the
 > tokenizer that this step loads, so the Transformer must be selected first.
 
+![Transformer Model Configuration](docs/images/transformer-model-configuration.png)
+
 #### 2. Data Preparation
 
 Text input comes from a CSV and **must** go through *Direct Text Extraction*.
@@ -426,6 +436,8 @@ In the **Data** tab:
   - **Select Label Column** - the class labels; **required** for Classification
   - **Max Samples to Process** - start small (default 1000)
   - Click **Extract Text for Transformer**
+
+![Direct Text Extraction for Transformer](docs/images/transformer-data-preparation.png)
 
 Text is tokenized with the model's own tokenizer, truncated to 128 tokens and padded
 to a fixed length, then the app reports the tokenized shape.
