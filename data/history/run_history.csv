@@ -1,0 +1,7 @@
+run_id,timestamp,config_name,duration,status
+1,2023-01-01 12:00:00,config1,60.0,Completed
+2,2023-01-01 13:00:00,config2,120.0,Failed
+3,2026-09-19 11:39:49,test_config,60.0,Completed
+4,2026-09-19 11:39:49,test_config,60.0,Completed
+5,2026-09-19 11:39:49,test_config,60.0,Failed
+6,2026-09-19 11:59:35,cnn_N4_L6,1001.8729350566864,Completed

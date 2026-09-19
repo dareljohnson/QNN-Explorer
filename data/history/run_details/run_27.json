@@ -1,0 +1,14 @@
+{
+  "task_type": "Classification",
+  "model_config": {
+    "num_qubits": 4,
+    "num_layers": 2,
+    "encoding_method": "Amplitude Encoding",
+    "ansatz_name": "Brickwall (Alternating Pairs)",
+    "observation_type": "State Vector",
+    "classical_backbone_type": "CNN",
+    "classical_model_name": "resnet18",
+    "gnn_input_features": null,
+    "use_gpu": true,
+    "quantum_input_size": 16,
+    "ansatz_func": 

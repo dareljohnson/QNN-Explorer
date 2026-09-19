@@ -1,0 +1,14 @@
+{
+  "task_type": "Regression",
+  "model_config": {
+    "num_qubits": 5,
+    "num_layers": 6,
+    "encoding_method": "Amplitude Encoding",
+    "ansatz_name": "Ansatz 1 (Rot+CNOT Chain)",
+    "observation_type": "State Vector",
+    "classical_backbone_type": "Regression",
+    "classical_model_name": "linear",
+    "gnn_input_features": null,
+    "use_gpu": true,
+    "quantum_input_size": 32,
+    "ansatz_func": 

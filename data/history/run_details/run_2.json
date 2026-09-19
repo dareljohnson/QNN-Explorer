@@ -1,0 +1,30 @@
+{
+  "task_type": "Regression",
+  "metrics": {
+    "mae": 0.324,
+    "mse": 0.156,
+    "rmse": 0.395,
+    "rmsle": 0.187,
+    "r2": 0.876
+  },
+  "model_config": {
+    "num_qubits": 6,
+    "num_layers": 4,
+    "encoding_method": "Amplitude Encoding",
+    "ansatz_name": "Hardware Efficient (All-to-All)",
+    "observation_type": "State Vector",
+    "classical_backbone_type": "CNN",
+    "classical_model_name": "resnet18",
+    "use_gpu": true
+  },
+  "training_params": {
+    "learning_rate": 0.0005,
+    "batch_size": 8,
+    "epochs": 10
+  },
+  "data_info": {
+    "data_type": "Images",
+    "samples": 500,
+    "features": 64
+  }
+}

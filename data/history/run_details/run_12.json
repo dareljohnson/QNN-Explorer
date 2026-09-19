@@ -1,0 +1,9 @@
+{
+  "model_config": {
+    "num_qubits": 8,
+    "ansatz_name": "Test Ansatz"
+  },
+  "data_info": {
+    "samples": 1000
+  }
+}
