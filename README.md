@@ -340,8 +340,6 @@ In the **Model Configuration** tab:
 - Choose "State Vector" as the Observation Type
 - Save your configuration with a descriptive name
 
-![Model Configuration for CNN]()
-
 #### 2. Data Preparation
 
 In the **Data** tab:
@@ -352,8 +350,6 @@ In the **Data** tab:
   - **Demo**: Use the built-in demo image dataset (e.g., MNIST Sample)
 - The system will automatically preprocess the images to the correct size for the CNN
 - For classification tasks, ensure your images are organized in labeled folders
-
-![Data Preparation for CNN]()
 
 #### 3. Training
 
@@ -373,8 +369,6 @@ The training metrics will show:
 - Entanglement measures (for State Vector observation)
 - Training time information
 
-![Training CNN Model]()
-
 #### 4. Making Predictions
 
 In the **Predict** tab:
@@ -386,8 +380,6 @@ In the **Predict** tab:
   - The output state vector visualization
   - Entanglement metrics
   - Classification results (if applicable)
-
-![Making Predictions with CNN]()
 
 #### Tips for Image Processing
 
