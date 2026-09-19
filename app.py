@@ -1854,7 +1854,11 @@ with tab_train:
 
                     # --- Display Final Training Plot ---
                     st.subheader("Final Training History")
-                    plot_training_history(st.session_state.training_history)
+                    final_history_fig = plot_training_history(st.session_state.training_history)
+                    if final_history_fig is not None:
+                        st.pyplot(final_history_fig)
+                    else:
+                        st.info("No numeric training metrics available to plot.")
                     
                     # --- Display Training Time Metrics ---
                     st.subheader("Training Time Metrics")
@@ -2373,7 +2377,11 @@ with tab_predict:
                                 if obs_type == 'State Vector':
                                     st.write("Output State Vector (Probabilities):")
                                     # st.text(prediction.detach().cpu().numpy())
-                                    plot_state_vector(prediction, st.session_state.model_config['num_qubits'])
+                                    state_fig = plot_state_vector(prediction, st.session_state.model_config['num_qubits'])
+                                    if state_fig is not None:
+                                        st.pyplot(state_fig)
+                                    else:
+                                        st.info("No state vector was returned by the model for plotting.")
                                     # Calculate and display entanglement
                                     try:
                                         # Get the quantum state correctly from the model's stored output
@@ -2873,7 +2881,17 @@ with tab_visualize:
              dummy_input_amp /= torch.norm(dummy_input_amp)
 
              # Use the dummy inputs expected by the quantum_circuit qnode
-             plot_circuit(qnode_vis, input_args=[dummy_input_amp, dummy_params])
+             # NOTE: plot_circuit() returns a base64 PNG string; it does not display
+             # anything itself, so it must be handed to st.image explicitly.
+             circuit_b64 = plot_circuit(qnode_vis, input_args=[dummy_input_amp, dummy_params])
+             if circuit_b64:
+                 st.image(
+                     f"data:image/png;base64,{circuit_b64}",
+                     caption=f"Quantum circuit: {n_qubits} qubits, {n_layers} layers",
+                     use_container_width=True,
+                 )
+             else:
+                 st.warning("The circuit renderer returned no image.")
         except Exception as e:
              st.error(f"Failed to generate circuit diagram: {e}")
              st.warning("Ensure model is instantiated correctly.")
@@ -2882,7 +2900,13 @@ with tab_visualize:
 
     st.subheader("Training History")
     if st.session_state.training_history['loss']:
-        plot_training_history(st.session_state.training_history)
+        # NOTE: plot_training_history() returns a matplotlib Figure; it does not
+        # display anything itself, so it must be handed to st.pyplot explicitly.
+        history_fig = plot_training_history(st.session_state.training_history)
+        if history_fig is not None:
+            st.pyplot(history_fig)
+        else:
+            st.info("Training history contains no numeric metrics to plot yet.")
     else:
         st.info("Run training in the 'Train' tab to see history plots.")
 
