@@ -34,9 +34,15 @@ def get_cnn_model(model_name='resnet18', pretrained=True, output_features=None):
     return model, num_ftrs
 
 def get_transformer_model(model_name='bert-base-uncased', output_features=None):
-    """Loads a pretrained Transformer model."""
+    """Loads a pretrained Transformer model as a fixed-size feature extractor.
+
+    Returns ``(TransformerFeatureExtractor, hidden_size)``. The wrapper is what
+    makes the model usable as a backbone: HuggingFace ``AutoModel`` takes
+    keyword arguments and returns a ``BaseModelOutput``, while ``HybridModel``
+    expects a single argument and a ``[batch, features]`` tensor.
+    """
     model = AutoModel.from_pretrained(model_name)
-    # The hidden size of the [CLS] token embedding is often used as the feature vector
+    # The hidden size of the [CLS] token embedding is used as the feature vector
     num_ftrs = model.config.hidden_size
 
     if output_features is not None:
@@ -44,8 +50,65 @@ def get_transformer_model(model_name='bert-base-uncased', output_features=None):
         print(f"Transformer base features: {num_ftrs}. Output layer added in Fusion Layer if needed.")
         pass
 
-    # We typically only need the base model for feature extraction
-    return model, num_ftrs
+    return TransformerFeatureExtractor(model), num_ftrs
+
+
+class TransformerFeatureExtractor(nn.Module):
+    """Adapts a HuggingFace transformer for use as a classical backbone.
+
+    Two incompatibilities are bridged here:
+
+    1. ``HybridModel`` calls its backbone positionally, but HuggingFace models
+       are keyword-only -- ``input_ids=``, ``attention_mask=``. A tokenizer
+       output dict is therefore dispatched as ``**kwargs`` rather than being
+       passed as the first positional argument (which used to fail with
+       ``TypeError: unhashable type: 'slice'``).
+    2. ``AutoModel`` returns a ``BaseModelOutput``, not a tensor, so callers
+       cannot use ``.shape``. The ``last_hidden_state`` is pooled to a
+       ``[batch, hidden_size]`` vector here.
+
+    Pooling uses the ``[CLS]`` token (position 0), the standard BERT-family
+    sentence representation; this matches ``HybridModel.transformer_pooling``.
+
+    The wrapper forwards whatever the model supports, so it works for both
+    BERT (which emits ``token_type_ids``) and DistilBERT (which does not).
+    """
+
+    def __init__(self, hf_model, pool='cls'):
+        super().__init__()
+        self.hf_model = hf_model
+        self.pool = pool
+        self.hidden_size = hf_model.config.hidden_size
+
+    def _pool(self, hidden_state):
+        if self.pool == 'cls':
+            return hidden_state[:, 0]
+        if self.pool == 'mean':
+            return hidden_state.mean(dim=1)
+        if self.pool == 'max':
+            return hidden_state.max(dim=1).values
+        raise ValueError(f"Unsupported pooling method: {self.pool}")
+
+    def forward(self, x):
+        if isinstance(x, dict):
+            outputs = self.hf_model(**x)
+        elif isinstance(x, torch.Tensor):
+            outputs = self.hf_model(input_ids=x)
+        else:
+            raise TypeError(
+                f"Transformer backbone expects a tensor or a tokenizer dict, got {type(x).__name__}"
+            )
+
+        hidden_state = getattr(outputs, 'last_hidden_state', None)
+        if hidden_state is None:
+            # Older/other model classes return a plain tuple with hidden states first
+            hidden_state = outputs[0] if isinstance(outputs, (tuple, list)) else outputs
+
+        pooled = self._pool(hidden_state)
+        # Some checkpoints emit complex activations; the quantum layer needs real input.
+        if torch.is_complex(pooled):
+            pooled = pooled.abs()
+        return pooled
 
 def get_regression_model(model_name='linear', output_features=None):
     """
