@@ -18,6 +18,11 @@ VECTORIZERS_DIR = os.path.join("saved_models", "vectorizers")
 os.makedirs(SCALERS_DIR, exist_ok=True)
 os.makedirs(VECTORIZERS_DIR, exist_ok=True)
 
+# --- Text tokenization length ---
+# Text is truncated/padded to this length. Defined once so the app's tokenizer
+# call and preprocess_text() cannot drift apart (they disagreed: 128 vs 512).
+MAX_TEXT_LENGTH = 128
+
 # --- Image Preprocessing ---
 def preprocess_image(image_input, target_size=(224, 224)):
     """Preprocesses a single image (PIL Image or path)."""
@@ -46,7 +51,7 @@ def preprocess_image(image_input, target_size=(224, 224)):
     return preprocess(img)
 
 # --- Text Preprocessing ---
-def preprocess_text(text_input, tokenizer, max_length=512):
+def preprocess_text(text_input, tokenizer, max_length=MAX_TEXT_LENGTH):
     """Preprocesses text using a Hugging Face tokenizer."""
     if tokenizer is None:
         raise ValueError("Tokenizer must be provided for text preprocessing.")

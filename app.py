@@ -39,7 +39,7 @@ from utils.run_history_tab import render_run_history_tab
 from utils.metrics import plot_confusion_matrix, calculate_classification_metrics, calculate_regression_metrics
 
 # Import preprocessing functions
-from data.preprocessing import preprocess_image, preprocess_text, preprocess_csv, extract_text_from_csv
+from data.preprocessing import preprocess_image, preprocess_text, preprocess_csv, extract_text_from_csv, MAX_TEXT_LENGTH
 
 # Constants
 SAVED_CONFIG_DIR = "saved_models/configs"
@@ -899,7 +899,7 @@ with tab_data:
                                                     batch_texts,
                                                     truncation=True,
                                                     padding='max_length',
-                                                    max_length=128,  # Limit sequence length
+                                                    max_length=MAX_TEXT_LENGTH,  # Limit sequence length
                                                     return_tensors='pt'
                                                 )
                                                 
