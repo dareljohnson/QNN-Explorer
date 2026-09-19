@@ -1,0 +1,10 @@
+{
+  "task_type": "Regression",
+  "model_config": "null",
+  "repair_info": {
+    "repaired": true,
+    "strategy": "repair_truncated_file",
+    "original_error": "Expecting value: line 14 column 20 (char 422)",
+    "strategy_info": "Created minimal valid JSON from extracted key-value pairs"
+  }
+}

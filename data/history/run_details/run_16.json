@@ -1,0 +1,7 @@
+{
+  "run_id": 16,
+  "config_name": "Test Missing Files",
+  "status": "Completed",
+  "timestamp": "2025-05-06 10:40:44",
+  "recovery_note": "This is a recovered run with minimal information due to file corruption."
+}

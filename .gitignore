@@ -1,0 +1,19 @@
+# Environments (7.9 GB)
+quantum_env/
+
+# Model artifacts (302 MB)
+saved_models/
+
+# Datasets (1.9 GB) -- keep small demo samples below, ignore the bulk
+data/demo_data/cats_dogs/
+data/demo_data/mnist/
+data/demo_data/csv/arXiv_scientific dataset.csv
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Redundant editor copies of tracked sources
+*.bak
+*.original

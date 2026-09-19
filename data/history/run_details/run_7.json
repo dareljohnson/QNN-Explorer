@@ -1,0 +1,11 @@
+{
+  "recovered": true,
+  "recovery_note": "This is minimal recovery data created from a severely corrupted file: run_7.json",
+  "repair_info": {
+    "repaired": true,
+    "strategy": "create_minimal_recovery_data",
+    "severity": "severe_corruption",
+    "original_file": "run_7.json"
+  },
+  "run_id": 7
+}

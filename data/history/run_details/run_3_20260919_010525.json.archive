@@ -1,0 +1,23 @@
+{
+  "model_config": {
+    "num_qubits": 4,
+    "num_layers": 2,
+    "use_gpu": false
+  },
+  "training_params": {
+    "learning_rate": 0.001,
+    "batch_size": 32,
+    "epochs": 10
+  },
+  "metrics": {
+    "accuracy": 0.95,
+    "loss": 0.05
+  },
+  "numpy_array": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ]
+}

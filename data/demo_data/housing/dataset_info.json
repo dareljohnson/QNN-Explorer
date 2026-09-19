@@ -1,0 +1,59 @@
+{
+  "name": "USA House Prices Dataset (Synthetic)",
+  "samples": 1000,
+  "features": [
+    "price",
+    "bedrooms",
+    "bathrooms",
+    "sqft_living",
+    "sqft_lot",
+    "floors",
+    "waterfront",
+    "view",
+    "condition",
+    "grade",
+    "yr_built",
+    "yr_renovated",
+    "zipcode",
+    "lat",
+    "long",
+    "sqft_above",
+    "sqft_basement",
+    "state"
+  ],
+  "description": "Synthetic housing dataset with features similar to real USA housing data",
+  "source": "Synthetically generated",
+  "mean_price": 218995.194,
+  "median_price": 160064.0,
+  "price_range": [
+    50000.0,
+    1330904.0
+  ],
+  "train_samples": 800,
+  "test_samples": 200,
+  "processed_features": 66,
+  "categorical_columns": [
+    "state"
+  ],
+  "numeric_columns": [
+    "bedrooms",
+    "bathrooms",
+    "sqft_living",
+    "sqft_lot",
+    "floors",
+    "waterfront",
+    "view",
+    "condition",
+    "grade",
+    "yr_built",
+    "yr_renovated",
+    "zipcode",
+    "lat",
+    "long",
+    "sqft_above",
+    "sqft_basement"
+  ],
+  "price_mean": 218145.26375,
+  "price_median": 161734.0,
+  "price_std": 193344.85133544178
+}
