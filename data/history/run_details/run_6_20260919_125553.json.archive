@@ -1,13 +1,13 @@
 {
-  "task_type": "Regression",
+  "task_type": "Classification",
   "model_config": {
     "num_qubits": 4,
     "num_layers": 6,
     "encoding_method": "Amplitude Encoding",
     "ansatz_name": "Ansatz 1 (Rot+CNOT Chain)",
     "observation_type": "State Vector",
-    "classical_backbone_type": "Regression",
-    "classical_model_name": "linear",
+    "classical_backbone_type": "CNN",
+    "classical_model_name": "resnet18",
     "gnn_input_features": null,
     "use_gpu": true,
     "quantum_input_size": 16,
