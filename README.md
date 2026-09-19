@@ -169,7 +169,7 @@ To accelerate training in the QNN Explorer, consider adjusting these settings:
 4. **Choose Simpler Classical Backbone**
    - "None" is fastest if input features already match 2^N (qubit count)
    - For images, smaller CNNs like ResNet18 are faster than deeper models
-   - For text, DistilBERT is much faster than full BERT or RoBERTa
+   - For text, `distilbert-base-uncased` is much faster than `bert-base-uncased`
 
 ### Additional Optimizations
 
@@ -200,7 +200,7 @@ The Predict tab allows you to test your trained model on new data. The process d
 #### For Transformer Models (Text)
 1. Select "Text" as the Input Data Type
 2. Enter your text in the provided text area
-3. The text will be tokenized using the model's tokenizer (e.g., BERT, RoBERTa)
+3. The text will be tokenized using the model's tokenizer (`distilbert-base-uncased` or `bert-base-uncased`)
 4. Click "Predict" to process the text through the hybrid quantum-classical model
 5. The token count and tokenization details are displayed for reference
 
@@ -340,8 +340,6 @@ In the **Model Configuration** tab:
 - Choose "State Vector" as the Observation Type
 - Save your configuration with a descriptive name
 
-![Model Configuration for CNN]()
-
 #### 2. Data Preparation
 
 In the **Data** tab:
@@ -352,8 +350,6 @@ In the **Data** tab:
   - **Demo**: Use the built-in demo image dataset (e.g., MNIST Sample)
 - The system will automatically preprocess the images to the correct size for the CNN
 - For classification tasks, ensure your images are organized in labeled folders
-
-![Data Preparation for CNN]()
 
 #### 3. Training
 
@@ -373,8 +369,6 @@ The training metrics will show:
 - Entanglement measures (for State Vector observation)
 - Training time information
 
-![Training CNN Model]()
-
 #### 4. Making Predictions
 
 In the **Predict** tab:
@@ -387,8 +381,6 @@ In the **Predict** tab:
   - Entanglement metrics
   - Classification results (if applicable)
 
-![Making Predictions with CNN]()
-
 #### Tips for Image Processing
 
 - **Image Size**: The images are automatically resized, but consistent image dimensions work best
@@ -398,6 +390,83 @@ In the **Predict** tab:
 - **Performance**: GPU acceleration significantly speeds up CNN training
 
 For more advanced use cases, you can modify the preprocessing pipeline in `data/preprocessing.py`. 
+
+### Text Classification with Transformer Backbones
+
+A Transformer backbone turns text into a 768-dimensional feature vector (the `[CLS]`
+token), which the fusion layer compresses to `2^N` features for amplitude encoding.
+Two backbones are supported: `distilbert-base-uncased` (smaller and faster) and
+`bert-base-uncased` (larger). The model and its tokenizer are downloaded from
+Hugging Face the first time you select one, so that step needs an internet
+connection; afterwards they are served from `~/.cache/huggingface`.
+
+#### 1. Model Configuration
+
+In the **Model Configuration** tab:
+- Select "Transformer" as the Classical Backbone Type
+- Choose the Transformer Model: `distilbert-base-uncased` or `bert-base-uncased`
+  - The tokenizer is downloaded and cached as soon as you pick one
+- Set the number of qubits (4-6 is a good start)
+- Choose "State Vector" as the Observation Type
+- Save your configuration with a descriptive name
+
+> **Do this before loading text data.** The Data tab's text pipeline uses the
+> tokenizer that this step loads, so the Transformer must be selected first.
+
+#### 2. Data Preparation
+
+Text input comes from a CSV and **must** go through *Direct Text Extraction*.
+
+In the **Data** tab:
+- Select "CSV" as the Data Type and load your file
+- In the CSV Configuration section, pick the columns for the numeric/vector path
+  (a Transformer backbone ignores these)
+- In the **Direct Text Extraction** section:
+  - **Select Text Column for Transformer** - the column holding the text
+  - **Select Label Column** - the class labels; **required** for Classification
+  - **Max Samples to Process** - start small (default 1000)
+  - Click **Extract Text for Transformer**
+
+Text is tokenized with the model's own tokenizer, truncated to 128 tokens and padded
+to a fixed length, then the app reports the tokenized shape.
+
+> **Vectorized CSV features are not compatible with Transformer backbones.** If you
+> preprocess CSV columns directly instead, the app warns and stops, because a
+> Transformer consumes tokenized text rather than numeric feature columns.
+
+#### 3. Training
+
+In the **Train** tab:
+- Set **Training Task** to "Classification" and make sure you extracted a label
+  column - Classification stops with an error if no labels were loaded.
+- Click "Instantiate Hybrid Model"
+- Set training parameters: Learning Rate (~0.005), Batch Size, Epochs (15)
+- Click "Start Training" and monitor loss, accuracy, and entanglement
+
+Leaving the task on "Unsupervised (Metric Optimization)" also runs, but it builds
+no classifier head: it optimizes quantum metrics such as entanglement instead of
+accuracy, so use Classification when you want predictions.
+
+The Transformer backbone is fine-tuned at **one tenth** of the learning rate you
+set, while the fusion layer, quantum circuit, and output head train at the full
+rate, with gradient clipping applied.
+
+#### 4. Making Predictions
+
+In the **Predict** tab, select "Text" as the Input Data Type and paste your text.
+See [For Transformer Models (Text)](#for-transformer-models-text) above.
+
+#### Tips for Text Processing
+
+- **The classifier sees 768 features, not just the quantum output**: the pooled
+  `[CLS]` vector is concatenated with the quantum result through the residual/skip
+  path, so accuracy is not capped by the `2^N` quantum bottleneck
+- **Prefer DistilBERT** to start: it is roughly 40% smaller and about 60% faster
+  than BERT at close to BERT's quality, which matters because quantum simulation
+  dominates runtime
+- **Sequence length is 128** (`MAX_TEXT_LENGTH` in `data/preprocessing.py`)
+- **Weights** are saved as `weights_transformer_N<qubits>_L<layers>.pt`; the
+  Predict tab's "Instantiate Model" step loads the matching weights
 
 # Create a script in your project root named download_cats_dogs.py
 
