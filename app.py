@@ -1354,10 +1354,14 @@ with tab_train:
                     # best epoch can be restored. Without it the app reported accuracy
                     # on the data it had just trained on.
                     val_features = val_labels = None
+                    # Unsupervised (metric optimisation) has no prediction head to
+                    # score, so holding rows back would only waste data.
+                    _is_unsupervised = str(st.session_state.get('task_type', '')).startswith('Unsupervised')
+                    _val_fraction = 0.0 if _is_unsupervised else                         float(st.session_state.get('val_split_pct', 20)) / 100.0
                     try:
                         (input_data, labels), (val_features, val_labels) = split_train_val(
                             input_data, labels,
-                            val_fraction=float(st.session_state.get('val_split_pct', 20)) / 100.0,
+                            val_fraction=_val_fraction,
                         )
                         if val_features is not None:
                             n_val_rows = (len(next(iter(val_features.values())))
@@ -1481,6 +1485,7 @@ with tab_train:
                     _finetune_steps_done = 0
                     # Best-checkpoint tracking over the validation split.
                     _best_val = None            # (accuracy or -loss), epoch, state_dict
+                    _val_reported = False
                     _best_state = None
                     _best_epoch = None
                     model.train() # Set model to training mode
@@ -1498,15 +1503,29 @@ with tab_train:
                         total_batches = len(data_loader)
                         if val_features is not None:
                             _val_loss, _val_acc = evaluate_split(model, val_features, val_labels)
-                            _score = _val_acc if _val_acc is not None else -_val_loss
-                            _label = (f"accuracy {_val_acc:.2%}" if _val_acc is not None
-                                      else f"loss {_val_loss:.4f}")
-                            if _best_val is None or _score > _best_val:
+                            if _val_loss is None and _val_acc is None:
+                                # e.g. a task with no output head: the model returns a
+                                # state vector, which cannot be scored against labels.
+                                if not _val_reported:
+                                    st.info("Held-out scoring is unavailable for this task "
+                                            "(the model has no prediction head); training loss "
+                                            "is still reported.")
+                                    _val_reported = True
+                                _val_loss = _val_acc = None
+                            _score = None if _val_acc is None and _val_loss is None else                                 (_val_acc if _val_acc is not None else -_val_loss)
+                            if _score is None:
+                                _val_loss = None
+                            if _score is None:
+                                pass  # nothing to report for this task
+                            else:
+                                _label = (f"accuracy {_val_acc:.2%}" if _val_acc is not None
+                                          else f"loss {_val_loss:.4f}")
+                            if _score is not None and (_best_val is None or _score > _best_val):
                                 _best_val, _best_epoch = _score, epoch + 1
                                 _best_state = {k: v.detach().cpu().clone()
                                                for k, v in model.state_dict().items()}
                                 st.success(f"Epoch {epoch+1}: validation {_label} (best so far)")
-                            else:
+                            elif _score is not None:
                                 st.info(f"Epoch {epoch+1}: validation {_label} "
                                         f"(best {_best_val:.4f} at epoch {_best_epoch})")
                         if _fine_tuning and _finetune_step_cap == 0:

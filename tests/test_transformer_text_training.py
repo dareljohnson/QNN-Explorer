@@ -312,3 +312,67 @@ def test_evaluate_split_accepts_plain_list_labels():
 
     assert accuracy == pytest.approx(1.0)
     assert loss is not None
+
+
+# ------------------------------------------- scoring a head-less model
+def test_evaluate_split_refuses_to_score_a_headless_model():
+    """The reported crash: mse_loss((109, 16), (109,)).
+
+    2^N state vectors have 16 columns; 109 float labels broadcast as 16 vs 109.
+    Unsupervised tasks have no output head, so there is no prediction to score.
+    """
+    class _StateVector(torch.nn.Module):
+        """Stands in for HybridModel with output_head = None."""
+
+        output_head = None
+
+        def forward(self, x):
+            batch = len(x) if not isinstance(x, torch.Tensor) else x.shape[0]
+            return torch.randn(batch, 16)  # 2^N for N=4
+
+    features = torch.randn(109, 109)
+    labels = torch.rand(109)  # numeric label column -> float dtype
+
+    loss, accuracy = evaluate_split(_StateVector(), features, labels)
+
+    assert (loss, accuracy) == (None, None), "must report 'not scorable', not raise"
+
+
+def test_evaluate_split_scores_a_real_regression_head():
+    class _Scalar(torch.nn.Module):
+        output_head = object()  # a head exists
+
+        def forward(self, x):
+            batch = len(x) if not isinstance(x, torch.Tensor) else x.shape[0]
+            return torch.zeros(batch, 1)
+
+    # zeros against a zero prediction: MSE is exactly 0
+    loss, accuracy = evaluate_split(_Scalar(), torch.randn(8, 4), torch.zeros(8))
+
+    assert accuracy is None and loss == pytest.approx(0.0)
+
+
+def test_evaluate_split_skips_output_width_that_cannot_match_labels():
+    class _Wide(torch.nn.Module):
+        output_head = object()
+
+        def forward(self, x):
+            batch = len(x) if not isinstance(x, torch.Tensor) else x.shape[0]
+            return torch.randn(batch, 2)  # 2 logits
+
+    # labels go up to 5, so 2 logits cannot be compared against them
+    loss, accuracy = evaluate_split(_Wide(), torch.randn(6, 4), torch.tensor([0, 5, 1, 2, 3, 4]))
+    assert (loss, accuracy) == (None, None)
+
+    # a healthy 3-class case still scores
+    class _Three(torch.nn.Module):
+        output_head = object()
+
+        def forward(self, x):
+            batch = len(x) if not isinstance(x, torch.Tensor) else x.shape[0]
+            out = torch.zeros(batch, 3)
+            out[:, 0] = 1.0
+            return out
+
+    loss, accuracy = evaluate_split(_Three(), torch.randn(6, 4), torch.tensor([0, 0, 0, 0, 0, 0]))
+    assert accuracy == pytest.approx(1.0)

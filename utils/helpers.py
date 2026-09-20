@@ -172,22 +172,48 @@ def split_train_val(features, labels, val_fraction: float = 0.2, seed: int = 0):
 
 
 def evaluate_split(model, features, labels, batch_size: int = 32):
-    """Loss-free accuracy/target summary for a held-out split.
+    """Held-out loss/accuracy for a validation split.
 
-    Returns (loss, accuracy); accuracy is None for regression-style targets.
+    Returns ``(loss, accuracy)`` -- accuracy is None for numeric targets -- or
+    ``(None, None)`` when the model cannot be scored at all. That happens for
+    tasks with no output head (Unsupervised metric optimisation): the model then
+    returns the quantum state vector, e.g. ``(109, 16)``, which cannot be
+    compared against 109 float labels. That mismatch surfaced as::
+
+        RuntimeError: The size of tensor a (16) must match the size of
+        tensor b (109) at non-singleton dimension 1
+
+    Guessing by label dtype alone is not enough: a CSV with a numeric label
+    column has float labels even when no regression head exists.
     """
     if features is None or labels is None:
         return None, None
+
     outputs = forward_in_batches(model, features, batch_size=batch_size)
     if not isinstance(labels, torch.Tensor):
         labels = torch.as_tensor(labels)
     if labels.dim() > 1:
         labels = labels.squeeze(-1)
+    if labels.numel() != outputs.shape[0]:
+        return None, None
+
+    # HybridModel always defines output_head (possibly None). Other callers may
+    # not define it at all, in which case we cannot tell and do not block.
+    no_head = getattr(model, "output_head", "unknown") is None
+    out_width = outputs.shape[-1]
+
     if labels.dtype.is_floating_point:
-        loss = torch.nn.functional.mse_loss(outputs.squeeze(-1), labels).item()
+        if no_head or out_width != 1:
+            # No regression head: this is a state vector, not a prediction.
+            return None, None
+        loss = torch.nn.functional.mse_loss(outputs.squeeze(-1), labels.float()).item()
         return loss, None
-    loss = torch.nn.functional.cross_entropy(outputs, labels.long()).item()
-    accuracy = (outputs.argmax(-1) == labels.long()).float().mean().item()
+
+    labels = labels.long()
+    if no_head or out_width < 2 or int(labels.max()) >= out_width:
+        return None, None
+    loss = torch.nn.functional.cross_entropy(outputs, labels).item()
+    accuracy = (outputs.argmax(-1) == labels).float().mean().item()
     return loss, accuracy
 
 
