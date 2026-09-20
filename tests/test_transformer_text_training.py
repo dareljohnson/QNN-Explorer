@@ -42,7 +42,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.preprocessing import encode_classification_labels  # noqa: E402
 from utils.helpers import (build_optimizer, forward_in_batches, freeze_params,
-                           resolve_device)  # noqa: E402
+                           resolve_device, split_train_val)  # noqa: E402
 from utils.tensor_utils import ensure_real  # noqa: E402
 
 
@@ -224,3 +224,51 @@ def test_forward_in_batches_handles_plain_tensors():
     features = torch.arange(20).reshape(10, 2).float()
     out = forward_in_batches(_Double(), features, batch_size=3)
     assert torch.equal(out, features * 2)
+
+
+# --------------------------------------------------- train/validation split
+def test_split_train_val_holds_out_a_fraction():
+    features = {"input_ids": torch.arange(100).reshape(20, 5),
+                "attention_mask": torch.ones(20, 5, dtype=torch.long)}
+    labels = torch.arange(20, dtype=torch.long)
+
+    (tr_f, tr_y), (va_f, va_y) = split_train_val(features, labels, val_fraction=0.25, seed=0)
+
+    assert len(va_y) == 5 and len(tr_y) == 15
+    assert va_f["input_ids"].shape == (5, 5)
+    # the two halves must be disjoint (an overlapping split silently leaks)
+    assert set(tr_y.tolist()).isdisjoint(set(va_y.tolist()))
+    assert set(tr_y.tolist()) | set(va_y.tolist()) == set(range(20))
+
+
+def test_split_train_val_works_on_plain_tensors():
+    features = torch.arange(40).reshape(10, 4).float()
+    labels = torch.arange(10, dtype=torch.long)
+
+    (tr_f, tr_y), (va_f, va_y) = split_train_val(features, labels, val_fraction=0.2, seed=1)
+
+    assert tr_f.shape == (8, 4) and va_f.shape == (2, 4)
+    assert len(tr_y) == 8 and len(va_y) == 2
+
+
+def test_split_train_val_can_be_disabled_and_never_empties_the_training_set():
+    features = torch.zeros(5, 2)
+    labels = torch.zeros(5, dtype=torch.long)
+
+    (tr_f, _), (va_f, va_y) = split_train_val(features, labels, val_fraction=0.0)
+    assert va_f is None and va_y is None
+    assert tr_f is features
+
+    # a fraction that would consume everything must still leave training rows
+    (tr_f2, _), (va_f2, _) = split_train_val(features, labels, val_fraction=1.0)
+    assert len(tr_f2) >= 1 and len(va_f2) == 4
+
+
+def test_split_is_reproducible_for_a_seed():
+    features = torch.arange(30).reshape(10, 3).float()
+    labels = torch.arange(10, dtype=torch.long)
+
+    _, (a_f, a_y) = split_train_val(features, labels, 0.3, seed=7)
+    _, (b_f, b_y) = split_train_val(features, labels, 0.3, seed=7)
+
+    assert torch.equal(a_f, b_f) and torch.equal(a_y, b_y)

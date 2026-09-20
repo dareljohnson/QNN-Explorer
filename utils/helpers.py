@@ -115,6 +115,69 @@ def forward_in_batches(model, features, batch_size: int = 32):
     return torch.cat(outputs, dim=0)
 
 
+def split_train_val(features, labels, val_fraction: float = 0.2, seed: int = 0):
+    """Split features and labels into ((train), (val)).
+
+    Handles a tensor, a list, or a tokenizer dict (input_ids/attention_mask).
+    The validation split is what makes held-out metrics and best-checkpoint
+    selection possible; without it the app measured accuracy on the data it had
+    just trained on.
+
+    Args:
+        features: tensor, list, or dict of tensors indexed by row
+        labels: tensor or list aligned with features
+        val_fraction: share of rows to hold out (0 disables the split)
+        seed: shuffle seed, so a run is reproducible
+
+    Returns:
+        ((train_features, train_labels), (val_features, val_labels)); the val half
+        is (None, None) when val_fraction is 0 or there is only one row.
+    """
+    total = len(next(iter(features.values()))) if isinstance(features, dict) else len(features)
+    n_val = 0 if val_fraction <= 0 else int(round(total * val_fraction))
+    n_val = min(max(n_val, 0), max(total - 1, 0))
+    if n_val == 0:
+        return (features, labels), (None, None)
+
+    perm = torch.randperm(total, generator=torch.Generator().manual_seed(seed))
+    val_idx, train_idx = perm[:n_val], perm[n_val:]
+
+    def take(idx):
+        if isinstance(features, dict):
+            taken_features = {k: v[idx] for k, v in features.items()}
+        elif isinstance(features, torch.Tensor):
+            taken_features = features[idx]
+        else:
+            taken_features = [features[i] for i in idx.tolist()]
+        if labels is None:
+            taken_labels = None
+        elif isinstance(labels, torch.Tensor):
+            taken_labels = labels[idx]
+        else:
+            taken_labels = [labels[i] for i in idx.tolist()]
+        return taken_features, taken_labels
+
+    return take(train_idx), take(val_idx)
+
+
+def evaluate_split(model, features, labels, batch_size: int = 32):
+    """Loss-free accuracy/target summary for a held-out split.
+
+    Returns (loss, accuracy); accuracy is None for regression-style targets.
+    """
+    if features is None or labels is None:
+        return None, None
+    outputs = forward_in_batches(model, features, batch_size=batch_size)
+    if labels.dim() > 1:
+        labels = labels.squeeze(-1)
+    if labels.dtype.is_floating_point:
+        loss = torch.nn.functional.mse_loss(outputs.squeeze(-1), labels).item()
+        return loss, None
+    loss = torch.nn.functional.cross_entropy(outputs, labels.long()).item()
+    accuracy = (outputs.argmax(-1) == labels.long()).float().mean().item()
+    return loss, accuracy
+
+
 def resolve_device(use_gpu_requested: bool) -> torch.device:
     """Pick the device for the model and for batches.
 

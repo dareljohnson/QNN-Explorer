@@ -13,7 +13,8 @@ from datetime import datetime
 from collections import defaultdict
 from torchvision import models, transforms
 from utils.helpers import (check_gpu, resolve_device, backbone_learning_rate,
-                           build_optimizer, freeze_params, forward_in_batches)
+                           build_optimizer, freeze_params, forward_in_batches,
+                           split_train_val, evaluate_split)
 from torch.utils.data import DataLoader
 import matplotlib
 matplotlib.use('Agg')  # headless backend - avoids requiring a GUI/Tk
@@ -345,16 +346,20 @@ with tab_config:
         else: # None
             st.info(f"No classical backbone. Input data features must match 2^N = {2**nq}.")
 
-        # Fine-tuning a pretrained backbone is opt-in. A frozen backbone trains in
-        # seconds and generalises better than an over-long fine-tune (92% vs 40%
-        # held-out on the ArXiv demo), so it is off by default.
+        # Fine-tuning a pretrained backbone is opt-in. Transformers default to frozen
+        # because fine-tuning them overfits small text datasets (92% held-out frozen,
+        # 94.5% for two epochs, 40% for fifteen). CNN/GNN keep the previous behaviour;
+        # on MNIST frozen reached 84.5% and fine-tuned 85% after 3 epochs, so there is
+        # nothing to gain by changing them here.
+        _default_finetune = (cb_type != "Transformer")
         finetune_backbone = st.checkbox(
             "Fine-tune classical backbone (advanced)",
-            value=st.session_state.model_config.get('finetune_backbone', False),
+            value=st.session_state.model_config.get('finetune_backbone', _default_finetune),
             key="finetune_backbone",
-            help=("Off: the pretrained backbone is frozen and only the fusion layer, "
-                  "quantum circuit and output head train. On: the backbone is fine-tuned "
-                  "for roughly the first two epochs at a reduced learning rate."),
+            help=("Off: the pretrained backbone is frozen and only the fusion layer, quantum "
+                  "circuit and output head train. Recommended for Transformers. On: the "
+                  "backbone is fine-tuned for roughly the first two epochs at a reduced "
+                  "learning rate."),
             disabled=(cb_type == "None"),
         )
 
@@ -1028,6 +1033,11 @@ with tab_train:
             batch_size = st.number_input("Batch Size", value=default_batch, min_value=1, key="batch_size", 
                                          help="Use smaller batch sizes (4-8) for Transformer models to prevent memory issues")
             epochs = st.number_input("Epochs", value=15, min_value=1, key="epochs")
+            val_split_pct = st.number_input(
+                "Validation Split (%)", value=20, min_value=0, max_value=50, step=5,
+                key="val_split_pct",
+                help=("Rows held out to measure held-out accuracy and pick the best epoch. "
+                      "0 disables the split (metrics then describe the training data)."))
             # Add Task Selection
             task_type = st.selectbox("Training Task", ["Unsupervised (Metric Optimization)", "Classification", "Regression"], key="task_type", help="Determines the loss function and whether labels are required.")
             # Add optimizer choice later (e.g., Adam, SGD)
@@ -1334,6 +1344,23 @@ with tab_train:
                         if len(input_data[first_key].shape) < 2:
                             input_data = {k: v.unsqueeze(0) for k, v in input_data.items()}
 
+                    # Hold out a validation split so accuracy means something and the
+                    # best epoch can be restored. Without it the app reported accuracy
+                    # on the data it had just trained on.
+                    val_features = val_labels = None
+                    try:
+                        (input_data, labels), (val_features, val_labels) = split_train_val(
+                            input_data, labels,
+                            val_fraction=float(st.session_state.get('val_split_pct', 20)) / 100.0,
+                        )
+                        if val_features is not None:
+                            n_val_rows = (len(next(iter(val_features.values())))
+                                          if isinstance(val_features, dict) else len(val_features))
+                            st.info(f"{n_val_rows} rows held out for validation.")
+                    except Exception as _split_err:
+                        st.warning(f"Could not create a validation split: {_split_err}")
+                        val_features = val_labels = None
+
                     # Instantiate appropriate Dataset
                     try:
                         if data_type in ["CSV", "None"]: # None implies direct feature input
@@ -1446,6 +1473,10 @@ with tab_train:
                     # on the ArXiv demo at 15 epochs) instead of helping.
                     _finetune_step_cap = 0
                     _finetune_steps_done = 0
+                    # Best-checkpoint tracking over the validation split.
+                    _best_val = None            # (accuracy or -loss), epoch, state_dict
+                    _best_state = None
+                    _best_epoch = None
                     model.train() # Set model to training mode
                     
                     # Track batch details for run history
@@ -1459,6 +1490,19 @@ with tab_train:
                         num_batches = 0
                         batch_times = []
                         total_batches = len(data_loader)
+                        if val_features is not None:
+                            _val_loss, _val_acc = evaluate_split(model, val_features, val_labels)
+                            _score = _val_acc if _val_acc is not None else -_val_loss
+                            _label = (f"accuracy {_val_acc:.2%}" if _val_acc is not None
+                                      else f"loss {_val_loss:.4f}")
+                            if _best_val is None or _score > _best_val:
+                                _best_val, _best_epoch = _score, epoch + 1
+                                _best_state = {k: v.detach().cpu().clone()
+                                               for k, v in model.state_dict().items()}
+                                st.success(f"Epoch {epoch+1}: validation {_label} (best so far)")
+                            else:
+                                st.info(f"Epoch {epoch+1}: validation {_label} "
+                                        f"(best {_best_val:.4f} at epoch {_best_epoch})")
                         if _fine_tuning and _finetune_step_cap == 0:
                             _finetune_step_cap = 2 * max(1, total_batches)
                             st.info(f"Backbone fine-tuning will stop after {_finetune_step_cap} "
@@ -1848,6 +1892,17 @@ with tab_train:
                             chart_placeholder.line_chart(loss_epoch_data, x="Epoch", y="Loss")
 
                     status_text.text(f"Training finished after {epochs} epochs.")
+
+                    # Keep the best epoch, not merely the last one: validation accuracy
+                    # typically peaks early and decays as the model fits noise.
+                    if _best_state is not None:
+                        try:
+                            model.load_state_dict(_best_state)
+                            st.success(f"Restored best checkpoint from epoch {_best_epoch} "
+                                       f"(validation score {_best_val:.4f}).")
+                        except Exception as _restore_err:
+                            st.warning(f"Could not restore the best checkpoint: {_restore_err}")
+
                     st.success("Training complete!")
                     model.eval() # Set back to eval mode
                     
@@ -2011,9 +2066,10 @@ with tab_train:
                     # Calculate and add metrics if we have validation data
                     if task_type == "Classification" and 'csv_labels' in st.session_state:
                         try:
-                            # Get validation data - we would use a separate test set in production
-                            features = input_data
-                            labels = st.session_state.csv_labels
+                            # Prefer the held-out split; fall back to the training data
+                            # only when the split was disabled.
+                            features = val_features if val_features is not None else input_data
+                            labels = val_labels if val_labels is not None else st.session_state.csv_labels
                             
                             # Run model on validation data
                             model.eval()
@@ -2088,9 +2144,10 @@ with tab_train:
 
                     elif task_type == "Regression" and 'csv_labels' in st.session_state:
                         try:
-                            # Get validation data
-                            features = input_data
-                            labels = st.session_state.csv_labels
+                            # Prefer the held-out split; fall back to the training data
+                            # only when the split was disabled.
+                            features = val_features if val_features is not None else input_data
+                            labels = val_labels if val_labels is not None else st.session_state.csv_labels
                             
                             # Run model on validation data
                             model.eval()
