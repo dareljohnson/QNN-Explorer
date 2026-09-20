@@ -85,8 +85,8 @@ def freeze_params(params) -> None:
 def forward_in_batches(model, features, batch_size: int = 32):
     """Run a model over features in batches on the model's own device.
 
-    Accepts a tensor or a tokenizer dict (input_ids/attention_mask) and returns
-    cpu tensors. The validation path used to hand the entire cpu dataset to a
+    Accepts a tensor, a tokenizer dict (input_ids/attention_mask), or a list of
+    per-sample tensors (image datasets), and returns cpu tensors. The validation path used to hand the entire cpu dataset to a
     cuda model in one call, which failed with "Expected all tensors to be on the
     same device, but found at least two devices, cuda:0 and cpu".
     """
@@ -110,8 +110,18 @@ def forward_in_batches(model, features, batch_size: int = 32):
         batch = sliced(start)
         if isinstance(batch, dict):
             batch = {k: v.to(device) for k, v in batch.items()}
-        else:
+        elif isinstance(batch, torch.Tensor):
             batch = batch.to(device)
+        else:
+            # A list/tuple of per-sample tensors, as image datasets produce.
+            # These used to reach `.to(device)` and fail with
+            # "AttributeError: 'list' object has no attribute 'to'".
+            items = [item.to(device) if isinstance(item, torch.Tensor) else item
+                     for item in batch]
+            try:
+                batch = torch.stack(items)
+            except (TypeError, RuntimeError):
+                batch = items
         outputs.append(model(batch).cpu())
     return torch.cat(outputs, dim=0)
 
@@ -169,6 +179,8 @@ def evaluate_split(model, features, labels, batch_size: int = 32):
     if features is None or labels is None:
         return None, None
     outputs = forward_in_batches(model, features, batch_size=batch_size)
+    if not isinstance(labels, torch.Tensor):
+        labels = torch.as_tensor(labels)
     if labels.dim() > 1:
         labels = labels.squeeze(-1)
     if labels.dtype.is_floating_point:

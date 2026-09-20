@@ -1100,7 +1100,12 @@ with tab_train:
                         # st.text(str(st.session_state.hybrid_model))
                         st.info(f"Model placed on device: {st.session_state.device}")
                     except Exception as e:
+                        import traceback as _tb
+                        print(f"[instantiate error] {type(e).__name__}: {e}", flush=True)
+                        _tb.print_exc()
                         st.error(f"Failed to instantiate model: {e}")
+                        with st.expander("Show traceback", expanded=False):
+                            st.code(_tb.format_exc())
 
             if st.session_state.hybrid_model is not None:
                 st.success("Model is instantiated and ready for training.")
@@ -2222,9 +2227,14 @@ with tab_train:
                 except Exception as e:
                     # Log as well as display: a failure here used to be invisible outside
                     # the browser, which is how run history silently stopped being written.
-                    print(f"[training error] {type(e).__name__}: {e}")
-                    traceback.print_exc()
+                    # The import is local so this handler cannot itself fail with
+                    # NameError if module state is ever stale or partially loaded.
+                    import traceback as _traceback
+                    print(f"[training error] {type(e).__name__}: {e}", flush=True)
+                    _traceback.print_exc()
                     st.error(f"Error during training: {e}")
+                    with st.expander("Show traceback", expanded=True):
+                        st.code(_traceback.format_exc())
                     # Reset training flag on error
                     st.session_state.training_in_progress = False
             else:
