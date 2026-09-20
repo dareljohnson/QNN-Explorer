@@ -42,7 +42,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.preprocessing import encode_classification_labels  # noqa: E402
 from utils.helpers import (build_optimizer, forward_in_batches, freeze_params,
-                           resolve_device, split_train_val)  # noqa: E402
+                           resolve_device, split_train_val, evaluate_split)  # noqa: E402
 from utils.tensor_utils import ensure_real  # noqa: E402
 
 
@@ -272,3 +272,43 @@ def test_split_is_reproducible_for_a_seed():
     _, (b_f, b_y) = split_train_val(features, labels, 0.3, seed=7)
 
     assert torch.equal(a_f, b_f) and torch.equal(a_y, b_y)
+
+
+# --------------------------------------------------- image-style batches
+def test_forward_in_batches_accepts_a_list_of_tensors():
+    """Image datasets arrive as a list of per-sample tensors, not a stacked tensor.
+
+    This used to raise "AttributeError: 'list' object has no attribute 'to'"
+    inside the validation split, which the training error handler then masked.
+    """
+    class _Flatten(torch.nn.Module):
+        def forward(self, x):
+            return x.reshape(x.shape[0], -1)[:, :2]
+
+    images = [torch.randn(3, 8, 8) for _ in range(6)]
+    out = forward_in_batches(_Flatten(), images, batch_size=2)
+
+    assert out.shape == (6, 2)
+
+
+def test_forward_in_batches_accepts_a_list_with_unstackable_items():
+    class _Count(torch.nn.Module):
+        def forward(self, batch):
+            return torch.zeros(len(batch), 2)
+
+    out = forward_in_batches(_Count(), [[1, 2], [3, 4]], batch_size=1)
+    assert out.shape == (2, 2)
+
+
+def test_evaluate_split_accepts_plain_list_labels():
+    class _Constant(torch.nn.Module):
+        def forward(self, x):
+            batch = len(x) if not isinstance(x, torch.Tensor) else x.shape[0]
+            return torch.stack([torch.tensor([0.1, 0.9])] * batch)
+
+    features = [torch.randn(3, 8, 8) for _ in range(4)]
+    labels = [1, 1, 1, 1]
+    loss, accuracy = evaluate_split(_Constant(), features, labels)
+
+    assert accuracy == pytest.approx(1.0)
+    assert loss is not None
