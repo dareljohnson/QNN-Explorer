@@ -2995,8 +2995,18 @@ with tab_visualize:
     # Visualization options depend on whether a model is configured/trained
 
     st.subheader("Circuit Diagram")
-    if st.session_state.hybrid_model and st.session_state.model_config:
-        st.info("Attempting to draw the circuit based on the instantiated QNode.")
+    if st.session_state.model_config:
+        # The diagram shows circuit structure, which comes from the configuration
+        # (qubits, layers, ansatz). The instantiated model only supplies parameter
+        # *values*, so the diagram still renders when the model is absent -- e.g.
+        # after the server restarts, which clears session state.
+        _has_model = st.session_state.hybrid_model is not None
+        if _has_model:
+            st.info("Drawing the circuit from the instantiated QNode.")
+        else:
+            st.info("No model instantiated in this session: drawing the circuit structure "
+                    "from the saved configuration. Instantiate a model in the 'Train' tab "
+                    "to see it with its trained parameters.")
         st.write("Note: Drawing requires representative input shapes.")
         # Create dummy inputs matching the expected structure for drawing
         try:
@@ -3016,12 +3026,19 @@ with tab_visualize:
              observation_type = st.session_state.model_config.get('observation_type', 'state vector')
              use_gpu = st.session_state.model_config.get('use_gpu', False)
              
-             # Create a QNode for visualization
-             qnode_vis, _ = create_qnn(n_qubits, n_layers, ansatz_func, use_gpu, observation_type)
-             
-             # Use the model's parameters instead of random ones
-             n_params = st.session_state.hybrid_model.num_quantum_params
-             dummy_params = st.session_state.hybrid_model.quantum_params.detach().cpu()
+             # create_qnn returns (circuit, num_params) -- the second value is a
+             # count, not parameters. Using it as parameters gave a 0-dim tensor and
+             # made the circuit fail to execute, silently falling back to drawing an
+             # unexecuted tape.
+             qnode_vis, num_params = create_qnn(n_qubits, n_layers, ansatz_func,
+                                                use_gpu, observation_type)
+
+             # Prefer the instantiated model's parameters; otherwise draw with fresh
+             # parameters of the right shape so the circuit can still be executed.
+             if st.session_state.hybrid_model is not None:
+                 dummy_params = st.session_state.hybrid_model.quantum_params.detach().cpu()
+             else:
+                 dummy_params = (torch.randn(int(num_params), dtype=torch.float32) * 0.1)
              
              # Dummy input for amplitude embedding (normalized vector of size 2^N)
              dummy_input_amp = torch.rand(2**n_qubits, dtype=torch.float32)

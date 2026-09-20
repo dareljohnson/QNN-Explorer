@@ -127,3 +127,22 @@ def test_visualize_renders_circuit_and_training_history(tmp_path, monkeypatch):
         "expected the st.pyplot training-history figure in addition to the app's "
         f"pre-existing media element; images were: {images}"
     )
+
+
+def test_circuit_diagram_renders_from_the_configuration_alone(tmp_path, monkeypatch):
+    """The diagram needs only the configuration, not an instantiated model.
+
+    ``st.session_state.hybrid_model`` lives in session state and is cleared by a
+    server restart, which left the Visualize tab showing "instantiate a model
+    first" even though the circuit's structure is fully described by the config.
+    """
+    from core.quantum_models import ansatz1
+
+    at = _run_app(tmp_path, monkeypatch,
+                  session_state={"model_config": dict(MODEL_CONFIG, ansatz_func=ansatz1)})
+
+    assert not at.exception, [str(e.value) for e in at.exception]
+
+    images = _images(at)
+    circuit = [c for _, c in images if c.startswith(CIRCUIT_CAPTION_PREFIX)]
+    assert circuit, f"no circuit diagram rendered from the configuration; images: {images}"
