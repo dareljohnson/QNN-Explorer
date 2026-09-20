@@ -4,6 +4,7 @@ import pennylane as qml
 import pandas as pd
 import numpy as np
 import os
+import traceback
 import json
 import time
 from PIL import Image
@@ -12,7 +13,7 @@ import joblib
 from datetime import datetime
 from collections import defaultdict
 from torchvision import models, transforms
-from utils.helpers import (check_gpu, resolve_device, backbone_learning_rate,
+from utils.helpers import (check_gpu, resolve_device, backbone_learning_rate, is_nan,
                            build_optimizer, freeze_params, forward_in_batches,
                            split_train_val, evaluate_split)
 from torch.utils.data import DataLoader
@@ -1263,7 +1264,7 @@ with tab_train:
                                 for state_vector in batch_output_cpu:
                                     ent = calculate_meyer_wallach(state_vector, num_qubits)
                                     # We want to maximize entanglement, so minimize negative entanglement
-                                    batch_loss -= ent if not np.isnan(ent) else 0.0 # Handle potential NaN
+                                    batch_loss -= ent if not is_nan(ent) else 0.0 # Handle potential NaN or None
                                 # Return loss suitable for backprop (needs to be on original device)
                                 return (batch_loss / len(batch_output)) * torch.ones(1, device=batch_output.device, requires_grad=True)
 
@@ -1740,7 +1741,7 @@ with tab_train:
                                                 entanglement = calculate_meyer_wallach(state_vector, st.session_state.model_config['num_qubits'])
                                                 
                                             # Handle NaN entanglement
-                                            if np.isnan(entanglement):
+                                            if is_nan(entanglement):
                                                 print("Warning: Entanglement calculation returned NaN, using placeholder value")
                                                 # Don't add to batch_entanglements
                                             else:
@@ -1778,7 +1779,7 @@ with tab_train:
                                     "batch": batch_idx + 1,
                                     "step": global_step,
                                     "loss": current_loss,
-                                    "entanglement": entanglement if not np.isnan(entanglement) else None,
+                                    "entanglement": None if is_nan(entanglement) else float(entanglement),
                                     "elapsed_time": elapsed_str,
                                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 }
@@ -2010,6 +2011,10 @@ with tab_train:
                         if not np.isnan(final_entanglement):
                             st.metric("Final Entanglement", f"{final_entanglement:.4f}")
 
+                    # Clear the in-progress flag before the bookkeeping below: if
+                    # anything in there fails, the UI must not stay locked.
+                    st.session_state.training_in_progress = False
+
                     # --- Save run in history ---
                     # Import run history functions
                     from utils.run_history import add_run, save_run_details
@@ -2037,7 +2042,9 @@ with tab_train:
                         },
                         "training_history": {
                             "loss": st.session_state.training_history.get('loss', []),
-                            "entanglement": [float(e) if not np.isnan(e) else None for e in st.session_state.training_history.get('entanglement', [])],
+                            # Raw values: save_run_details sanitises NaN/None/callables.
+                            # The old comprehension called np.isnan(None) and crashed here.
+                            "entanglement": st.session_state.training_history.get('entanglement', []),
                             "accuracy": st.session_state.training_history.get('accuracy', [])
                         },
                         "data_info": st.session_state.data_info,
@@ -2213,6 +2220,10 @@ with tab_train:
                     # Reset training flag
                     st.session_state.training_in_progress = False
                 except Exception as e:
+                    # Log as well as display: a failure here used to be invisible outside
+                    # the browser, which is how run history silently stopped being written.
+                    print(f"[training error] {type(e).__name__}: {e}")
+                    traceback.print_exc()
                     st.error(f"Error during training: {e}")
                     # Reset training flag on error
                     st.session_state.training_in_progress = False
@@ -2518,7 +2529,7 @@ with tab_predict:
                                             entanglement = calculate_meyer_wallach(pred_state, st.session_state.model_config['num_qubits'])
                                         
                                         # Handle NaN entanglement values
-                                        if np.isnan(entanglement):
+                                        if is_nan(entanglement):
                                             st.warning("Could not calculate entanglement for this state. The state may be invalid or numerical issues occurred.")
                                         else:
                                             st.metric("Entanglement (Meyer-Wallach Q)", f"{entanglement:.4f}")

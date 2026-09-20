@@ -15,6 +15,7 @@ Key features:
 """
 
 import os
+import math
 import pandas as pd
 import numpy as np
 import json
@@ -197,6 +198,54 @@ def update_run_status(run_id, status):
     
     return True
 
+def json_safe(obj):
+    """Make arbitrary run details JSON-serialisable.
+
+    ``model_config`` carries ``ansatz_func``, a callable injected by the app when
+    a model is instantiated. ``json.dump`` raised on it *after* writing part of
+    the file, so ``run_N.json`` was left truncated and unreadable - and the same
+    happened to its ``.bak``, because both were streamed straight to their final
+    path. Callables are now recorded by name, numpy scalars/arrays and tensors are
+    converted, and NaN/Infinity become null (JSON has no way to express them).
+    """
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return obj
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, np.ndarray):
+        return json_safe(obj.tolist())
+    if isinstance(obj, np.generic):
+        return json_safe(obj.item())
+    if isinstance(obj, dict):
+        return {str(key): json_safe(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [json_safe(item) for item in obj]
+    if callable(obj):
+        return getattr(obj, "__name__", repr(obj))
+    try:  # torch tensors and anything else with a plain-python form
+        return json_safe(obj.detach().cpu().tolist())
+    except Exception:
+        return str(obj)
+
+
+def atomic_json_dump(payload, path, **kwargs):
+    """Write JSON via a temp file + rename, so a failure cannot truncate `path`."""
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w") as handle:
+            json.dump(payload, handle, **kwargs)
+        os.replace(tmp_path, path)
+        return True
+    except Exception as exc:
+        print(f"Error writing {path}: {exc}")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
+
+
 def save_run_details(run_id, details):
     """Save details for a run.
     
@@ -213,18 +262,9 @@ def save_run_details(run_id, details):
     """
     init_history_dirs()
     
-    # Convert NumPy arrays to lists
-    def convert_numpy(obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, dict):
-            return {k: convert_numpy(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [convert_numpy(item) for item in obj]
-        return obj
-    
-    # Process the details
-    processed_details = convert_numpy(details)
+    # Sanitise every value: numpy types, tensors, NaN/Infinity and callables such
+    # as ansatz_func, which json.dump cannot serialise.
+    processed_details = json_safe(details)
     
     # Define paths for the details files - support both JSON and pickle for compatibility
     json_file = os.path.join(RUN_DETAILS_PATH, f"run_{run_id}.json")
@@ -241,28 +281,15 @@ def save_run_details(run_id, details):
         except Exception as e:
             print(f"Warning: Could not create archive of previous file: {e}")
     
-    # Always save a backup first (non-indented for reliability)
-    try:
-        with open(json_backup, 'w') as f:
-            json.dump(processed_details, f)  # No indentation for simpler format
-    except Exception as e:
-        print(f"Warning: Could not save backup JSON file: {e}")
-    
+    # Always save a backup first (non-indented for reliability). Both writes go
+    # through a temp file: a serialisation failure used to leave a truncated file.
+    if not atomic_json_dump(processed_details, json_backup):
+        print(f"Warning: Could not save backup JSON file: {json_backup}")
+
     # Save as JSON (preferred format)
-    success = False
-    try:
-        with open(json_file, 'w') as f:
-            json.dump(processed_details, f, indent=2)
-        success = True
-    except Exception as e:
-        print(f"Error saving JSON file for run {run_id}: {e}")
-        # If main save failed but backup succeeded, don't overwrite backup
-        if not os.path.exists(json_backup):
-            with open(json_backup, 'w') as f:
-                try:
-                    json.dump(processed_details, f)  # No indentation for simpler format
-                except Exception as backup_e:
-                    print(f"Error saving backup JSON file: {backup_e}")
+    success = atomic_json_dump(processed_details, json_file, indent=2)
+    if not success:
+        print(f"Error saving JSON file for run {run_id}")
     
     # Validate the saved file to ensure it's readable
     if success and os.path.exists(json_file):

@@ -1,5 +1,6 @@
 # Miscellaneous helper functions can be added here.
 
+import numpy as np
 import torch
 
 def check_gpu():
@@ -176,6 +177,23 @@ def evaluate_split(model, features, labels, batch_size: int = 32):
     loss = torch.nn.functional.cross_entropy(outputs, labels.long()).item()
     accuracy = (outputs.argmax(-1) == labels.long()).float().mean().item()
     return loss, accuracy
+
+
+def is_nan(value) -> bool:
+    """True when a value is missing or NaN.
+
+    ``np.isnan(None)`` raises TypeError, and the app records unmeasurable
+    entanglement as None -- so the run-history block crashed while reading its
+    own training history: "ufunc 'isnan' not supported for the input types".
+    That happened after "Training complete!", so runs got a history row but no
+    details file, and the training-in-progress flag was never reset.
+    """
+    if value is None:
+        return True
+    try:
+        return bool(np.isnan(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def resolve_device(use_gpu_requested: bool) -> torch.device:
