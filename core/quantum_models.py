@@ -17,6 +17,11 @@ except ImportError:
     def ensure_real(tensor_or_dict, eps=1e-10, target_dtype=torch.float32):
         if isinstance(tensor_or_dict, torch.Tensor):
             tensor = tensor_or_dict
+            # Keep indices/masks integral; casting token ids to float breaks
+            # nn.Embedding lookups inside transformer backbones.
+            if tensor.dtype in (torch.bool, torch.uint8, torch.int8, torch.int16,
+                                torch.int32, torch.int64):
+                return tensor
             if torch.is_complex(tensor):
                 print(f"Converting complex tensor with shape {tensor.shape} to real")
                 tensor = tensor.abs()

@@ -79,16 +79,34 @@ class _FakeHFModel(nn.Module):
         return BaseModelOutput(last_hidden_state=values.reshape(batch, seq, self.config.hidden_size))
 
 
-def test_pooling_uses_cls_token():
+def test_default_pooling_is_mean():
+    """Mean pooling scored 94.5% held-out vs 91.5% for [CLS] on the ArXiv demo."""
     wrapper = TransformerFeatureExtractor(_FakeHFModel(4))
     out = wrapper(_batch(batch_size=2, seq_len=2))
 
     assert out.shape == (2, 4)
     hidden = _FakeHFModel(4).forward(**_batch(batch_size=2, seq_len=2)).last_hidden_state
-    assert torch.equal(out, hidden[:, 0]), "expected the [CLS] token representation"
+    assert torch.allclose(out, hidden.mean(dim=1)), "default pooling should be the mean"
 
-    mean_wrapper = TransformerFeatureExtractor(_FakeHFModel(4), pool="mean")
-    assert torch.allclose(mean_wrapper(_batch(batch_size=2, seq_len=2)), hidden.mean(dim=1))
+
+def test_mean_pooling_ignores_padding_tokens():
+    """Masked positions must not dilute the average."""
+    wrapper = TransformerFeatureExtractor(_FakeHFModel(4), pool="mean")
+    ids = torch.tensor([[1, 2, 3, 0, 0], [4, 5, 6, 7, 0]])
+    mask = torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]])
+    out = wrapper({"input_ids": ids, "attention_mask": mask})
+
+    hidden = _FakeHFModel(4).forward(input_ids=ids).last_hidden_state
+    expected_last = hidden[1, :4].mean(dim=0)
+    assert torch.allclose(out[1], expected_last, atol=1e-6)
+
+
+def test_cls_pooling_is_still_available():
+    wrapper = TransformerFeatureExtractor(_FakeHFModel(4), pool="cls")
+    out = wrapper(_batch(batch_size=2, seq_len=2))
+
+    hidden = _FakeHFModel(4).forward(**_batch(batch_size=2, seq_len=2)).last_hidden_state
+    assert torch.equal(out, hidden[:, 0]), "expected the [CLS] token representation"
 
 
 def test_returns_a_tensor_not_a_model_output():

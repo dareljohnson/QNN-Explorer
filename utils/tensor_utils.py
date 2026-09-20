@@ -5,6 +5,16 @@ Tensor utility functions for quantum-classical neural networks.
 import torch
 import numpy as np
 
+# Dtypes that carry indices/masks rather than values; never cast these to float.
+_INTEGRAL_DTYPES = (
+    torch.bool,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+)
+
 def ensure_real(tensor_or_dict, eps=1e-10, target_dtype=torch.float32):
     """
     Convert complex tensors to real and ensure consistent dtype.
@@ -35,6 +45,14 @@ def ensure_real(tensor_or_dict, eps=1e-10, target_dtype=torch.float32):
     
     # Handle tensors
     elif isinstance(tensor_or_dict, torch.Tensor):
+        # Integer/bool tensors are indices and masks (token ids, attention
+        # masks), never quantum values. Downcasting them to float breaks
+        # nn.Embedding lookups inside transformer backbones:
+        #   "Expected tensor for argument #1 'indices' to have one of the
+        #    following scalar types: Long, Int; but got ... FloatTensor"
+        if tensor_or_dict.dtype in _INTEGRAL_DTYPES:
+            return tensor_or_dict
+
         # Convert complex to real
         if torch.is_complex(tensor_or_dict):
             print(f"Converting complex tensor with shape {tensor_or_dict.shape} to real")

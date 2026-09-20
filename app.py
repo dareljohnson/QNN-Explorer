@@ -12,7 +12,9 @@ import joblib
 from datetime import datetime
 from collections import defaultdict
 from torchvision import models, transforms
-from utils.helpers import check_gpu
+from utils.helpers import (check_gpu, resolve_device, backbone_learning_rate,
+                           build_optimizer, freeze_params, forward_in_batches,
+                           split_train_val, evaluate_split)
 from torch.utils.data import DataLoader
 import matplotlib
 matplotlib.use('Agg')  # headless backend - avoids requiring a GUI/Tk
@@ -39,7 +41,7 @@ from utils.run_history_tab import render_run_history_tab
 from utils.metrics import plot_confusion_matrix, calculate_classification_metrics, calculate_regression_metrics
 
 # Import preprocessing functions
-from data.preprocessing import preprocess_image, preprocess_text, preprocess_csv, extract_text_from_csv, MAX_TEXT_LENGTH
+from data.preprocessing import preprocess_image, preprocess_text, preprocess_csv, extract_text_from_csv, MAX_TEXT_LENGTH, encode_classification_labels
 
 # Constants
 SAVED_CONFIG_DIR = "saved_models/configs"
@@ -344,6 +346,23 @@ with tab_config:
         else: # None
             st.info(f"No classical backbone. Input data features must match 2^N = {2**nq}.")
 
+        # Fine-tuning a pretrained backbone is opt-in. Transformers default to frozen
+        # because fine-tuning them overfits small text datasets (92% held-out frozen,
+        # 94.5% for two epochs, 40% for fifteen). CNN/GNN keep the previous behaviour;
+        # on MNIST frozen reached 84.5% and fine-tuned 85% after 3 epochs, so there is
+        # nothing to gain by changing them here.
+        _default_finetune = (cb_type != "Transformer")
+        finetune_backbone = st.checkbox(
+            "Fine-tune classical backbone (advanced)",
+            value=st.session_state.model_config.get('finetune_backbone', _default_finetune),
+            key="finetune_backbone",
+            help=("Off: the pretrained backbone is frozen and only the fusion layer, quantum "
+                  "circuit and output head train. Recommended for Transformers. On: the "
+                  "backbone is fine-tuned for roughly the first two epochs at a reduced "
+                  "learning rate."),
+            disabled=(cb_type == "None"),
+        )
+
         st.subheader("Save/Load Configuration")
         save_name = st.text_input("Configuration Name", f"config_N{nq}_L{nl}_{cb_type.lower() if cb_type != 'None' else 'direct'}.json", key="save_config_name")
 
@@ -359,6 +378,7 @@ with tab_config:
                 "gnn_input_features": gnn_input_features if cb_type == "GNN" else None,
                 "use_gpu": use_gpu and torch.cuda.is_available(),
                 "quantum_input_size": 2**nq,
+                "finetune_backbone": bool(finetune_backbone),
             }
             st.session_state.model_config = config
             save_model_config(config, save_name)
@@ -918,7 +938,15 @@ with tab_data:
                                             # Store tokenized data and labels
                                             st.session_state.loaded_data = tokenized
                                             if labels:
-                                                st.session_state.csv_labels = torch.tensor(labels)
+                                                # Categorical labels (e.g. 'cs.CV') are factorized
+                                                # to class indices; torch.tensor() on raw strings
+                                                # raises "too many dimensions 'str'".
+                                                label_tensor, class_names = encode_classification_labels(labels)
+                                                st.session_state.csv_labels = label_tensor
+                                                if class_names:
+                                                    st.session_state.data_info['class_names'] = class_names
+                                                    st.write(f"Encoded {len(class_names)} label classes: "
+                                                             f"{', '.join(class_names)}")
                                             
                                             # Update data info
                                             st.session_state.data_info['data_type'] = 'Text'
@@ -1005,6 +1033,11 @@ with tab_train:
             batch_size = st.number_input("Batch Size", value=default_batch, min_value=1, key="batch_size", 
                                          help="Use smaller batch sizes (4-8) for Transformer models to prevent memory issues")
             epochs = st.number_input("Epochs", value=15, min_value=1, key="epochs")
+            val_split_pct = st.number_input(
+                "Validation Split (%)", value=20, min_value=0, max_value=50, step=5,
+                key="val_split_pct",
+                help=("Rows held out to measure held-out accuracy and pick the best epoch. "
+                      "0 disables the split (metrics then describe the training data)."))
             # Add Task Selection
             task_type = st.selectbox("Training Task", ["Unsupervised (Metric Optimization)", "Classification", "Regression"], key="task_type", help="Determines the loss function and whether labels are required.")
             # Add optimizer choice later (e.g., Adam, SGD)
@@ -1020,6 +1053,10 @@ with tab_train:
                         
                         # Use GPU safely
                         use_gpu = st.session_state.model_config.get('use_gpu', False) and torch.cuda.is_available()
+                        # The same flag must decide where the model and batches live. Placing the
+                        # backbone on cuda while the quantum simulator stayed on cpu broke
+                        # validation with "Expected all tensors to be on the same device".
+                        st.session_state.device = resolve_device(use_gpu)
                         if use_gpu and st.session_state.model_config.get('classical_backbone_type', '').lower() == 'transformer':
                             st.warning("Using GPU with Transformer backbone in Streamlit may cause issues. If model fails, try disabling GPU.")
                         
@@ -1121,21 +1158,18 @@ with tab_train:
                 
                     st.info(f"Starting training for {epochs} epochs...")
                     model = st.session_state.hybrid_model
-                    # Use a lower learning rate for a pretrained classical backbone
-                    # and the requested rate for the quantum layer + output head.
-                    # This lets us fine-tune the backbone without diverging.
-                    backbone = getattr(model, 'classical_backbone', None)
-                    if backbone is not None and len(list(backbone.parameters())) > 0:
-                        backbone_lr = lr * 0.1
-                        head_params = [p for n, p in model.named_parameters()
-                                       if not n.startswith('classical_backbone.')]
-                        optimizer = torch.optim.Adam([
-                            {'params': list(backbone.parameters()), 'lr': backbone_lr},
-                            {'params': head_params, 'lr': lr},
-                        ])
-                        st.info(f"Fine-tuning backbone at lr={backbone_lr:.6f}, head/quantum at lr={lr:.6f}")
+                    # Backbone frozen by default; fine-tuning is opt-in (see
+                    # utils.helpers.build_optimizer).
+                    _finetune_requested = bool(
+                        st.session_state.model_config.get('finetune_backbone', False))
+                    optimizer, _bb_params, _fine_tuning = build_optimizer(
+                        model, lr, finetune_backbone=_finetune_requested)
+                    if _bb_params is not None:
+                        _bb_lr = backbone_learning_rate(
+                            lr, st.session_state.model_config.get('classical_backbone_type'))
+                        st.info(f"Fine-tuning backbone at lr={_bb_lr:.6f}, head/quantum at lr={lr:.6f}")
                     else:
-                        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+                        st.info(f"Backbone frozen; head/quantum at lr={lr:.6f}")
                     
                     # --- Loss Function ---
                     # Define loss based on task.
@@ -1310,6 +1344,23 @@ with tab_train:
                         if len(input_data[first_key].shape) < 2:
                             input_data = {k: v.unsqueeze(0) for k, v in input_data.items()}
 
+                    # Hold out a validation split so accuracy means something and the
+                    # best epoch can be restored. Without it the app reported accuracy
+                    # on the data it had just trained on.
+                    val_features = val_labels = None
+                    try:
+                        (input_data, labels), (val_features, val_labels) = split_train_val(
+                            input_data, labels,
+                            val_fraction=float(st.session_state.get('val_split_pct', 20)) / 100.0,
+                        )
+                        if val_features is not None:
+                            n_val_rows = (len(next(iter(val_features.values())))
+                                          if isinstance(val_features, dict) else len(val_features))
+                            st.info(f"{n_val_rows} rows held out for validation.")
+                    except Exception as _split_err:
+                        st.warning(f"Could not create a validation split: {_split_err}")
+                        val_features = val_labels = None
+
                     # Instantiate appropriate Dataset
                     try:
                         if data_type in ["CSV", "None"]: # None implies direct feature input
@@ -1400,18 +1451,32 @@ with tab_train:
                     except Exception as _probe_err:
                         print(f"[warn] probe forward failed: {_probe_err}")
 
-                    _bb = getattr(model, 'classical_backbone', None)
-                    if _bb is not None and len(list(_bb.parameters())) > 0:
-                        _head_params = [p for n, p in model.named_parameters()
-                                        if not n.startswith('classical_backbone.')]
-                        optimizer = torch.optim.Adam([
-                            {'params': list(_bb.parameters()), 'lr': lr * 0.1},
-                            {'params': _head_params, 'lr': lr},
-                        ])
+                    # Backbone frozen by default; fine-tuning is opt-in and gets a
+                    # reduced rate (utils.helpers.build_optimizer).
+                    optimizer, _backbone_params, _fine_tuning = build_optimizer(
+                        model, lr,
+                        finetune_backbone=bool(st.session_state.model_config.get('finetune_backbone', False)),
+                    )
+                    if _backbone_params is None:
+                        _bb = getattr(model, 'classical_backbone', None)
+                        if _bb is not None and len(list(_bb.parameters())) > 0:
+                            st.info(f"Backbone frozen: head/quantum train at lr={lr:.6f}.")
                     else:
-                        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+                        _backbone_lr = backbone_learning_rate(
+                            lr, st.session_state.model_config.get('classical_backbone_type'))
+                        st.info(f"Fine-tuning backbone at lr={_backbone_lr:.6f} "
+                                f"(capped to ~2 epochs), head/quantum at lr={lr:.6f}")
 
                     global_step = 0
+                    # Cap backbone fine-tuning at roughly two epochs of updates: past
+                    # that the backbone fits the training set (100% train / 40% held-out
+                    # on the ArXiv demo at 15 epochs) instead of helping.
+                    _finetune_step_cap = 0
+                    _finetune_steps_done = 0
+                    # Best-checkpoint tracking over the validation split.
+                    _best_val = None            # (accuracy or -loss), epoch, state_dict
+                    _best_state = None
+                    _best_epoch = None
                     model.train() # Set model to training mode
                     
                     # Track batch details for run history
@@ -1425,6 +1490,23 @@ with tab_train:
                         num_batches = 0
                         batch_times = []
                         total_batches = len(data_loader)
+                        if val_features is not None:
+                            _val_loss, _val_acc = evaluate_split(model, val_features, val_labels)
+                            _score = _val_acc if _val_acc is not None else -_val_loss
+                            _label = (f"accuracy {_val_acc:.2%}" if _val_acc is not None
+                                      else f"loss {_val_loss:.4f}")
+                            if _best_val is None or _score > _best_val:
+                                _best_val, _best_epoch = _score, epoch + 1
+                                _best_state = {k: v.detach().cpu().clone()
+                                               for k, v in model.state_dict().items()}
+                                st.success(f"Epoch {epoch+1}: validation {_label} (best so far)")
+                            else:
+                                st.info(f"Epoch {epoch+1}: validation {_label} "
+                                        f"(best {_best_val:.4f} at epoch {_best_epoch})")
+                        if _fine_tuning and _finetune_step_cap == 0:
+                            _finetune_step_cap = 2 * max(1, total_batches)
+                            st.info(f"Backbone fine-tuning will stop after {_finetune_step_cap} "
+                                    f"steps (~2 epochs) to avoid overfitting.")
                         
                         for batch_idx, batch in enumerate(data_loader):
                             batch_start_time = time.time()
@@ -1545,6 +1627,16 @@ with tab_train:
                                 torch.nn.utils.clip_grad_norm_(
                                     [p for p in model.parameters() if p.requires_grad], max_norm=1.0)
                                 optimizer.step()
+
+                                # Stop updating the backbone once the cap is reached; the
+                                # head, fusion layer and quantum circuit keep training.
+                                if _fine_tuning and _backbone_params is not None:
+                                    _finetune_steps_done += 1
+                                    if _finetune_steps_done >= _finetune_step_cap:
+                                        freeze_params(_backbone_params)
+                                        _fine_tuning = False
+                                        st.info(f"Backbone frozen after {_finetune_steps_done} "
+                                                f"fine-tuning steps; continuing to train the head.")
                             except Exception as e:
                                 st.error(f"Error during backward pass or optimizer step (Batch {num_batches}, Epoch {epoch+1}): {e}")
                                 st.stop()
@@ -1800,6 +1892,17 @@ with tab_train:
                             chart_placeholder.line_chart(loss_epoch_data, x="Epoch", y="Loss")
 
                     status_text.text(f"Training finished after {epochs} epochs.")
+
+                    # Keep the best epoch, not merely the last one: validation accuracy
+                    # typically peaks early and decays as the model fits noise.
+                    if _best_state is not None:
+                        try:
+                            model.load_state_dict(_best_state)
+                            st.success(f"Restored best checkpoint from epoch {_best_epoch} "
+                                       f"(validation score {_best_val:.4f}).")
+                        except Exception as _restore_err:
+                            st.warning(f"Could not restore the best checkpoint: {_restore_err}")
+
                     st.success("Training complete!")
                     model.eval() # Set back to eval mode
                     
@@ -1963,15 +2066,17 @@ with tab_train:
                     # Calculate and add metrics if we have validation data
                     if task_type == "Classification" and 'csv_labels' in st.session_state:
                         try:
-                            # Get validation data - we would use a separate test set in production
-                            features = input_data
-                            labels = st.session_state.csv_labels
+                            # Prefer the held-out split; fall back to the training data
+                            # only when the split was disabled.
+                            features = val_features if val_features is not None else input_data
+                            labels = val_labels if val_labels is not None else st.session_state.csv_labels
                             
                             # Run model on validation data
                             model.eval()
                             with torch.no_grad():
                                 if isinstance(features, dict): # For transformer input
-                                    val_outputs = model(features)
+                                    # Batched and moved to the model's device
+                                    val_outputs = forward_in_batches(model, features)
                                 else:
                                     # Use smaller batches for inference
                                     inference_batch_size = min(32, len(features))
@@ -2039,15 +2144,17 @@ with tab_train:
 
                     elif task_type == "Regression" and 'csv_labels' in st.session_state:
                         try:
-                            # Get validation data
-                            features = input_data
-                            labels = st.session_state.csv_labels
+                            # Prefer the held-out split; fall back to the training data
+                            # only when the split was disabled.
+                            features = val_features if val_features is not None else input_data
+                            labels = val_labels if val_labels is not None else st.session_state.csv_labels
                             
                             # Run model on validation data
                             model.eval()
                             with torch.no_grad():
                                 if isinstance(features, dict): # For transformer input
-                                    val_outputs = model(features)
+                                    # Batched and moved to the model's device
+                                    val_outputs = forward_in_batches(model, features)
                                 else:
                                     # Use smaller batches for inference
                                     inference_batch_size = min(32, len(features))
