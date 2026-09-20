@@ -12,7 +12,8 @@ import joblib
 from datetime import datetime
 from collections import defaultdict
 from torchvision import models, transforms
-from utils.helpers import check_gpu, resolve_device, backbone_learning_rate
+from utils.helpers import (check_gpu, resolve_device, backbone_learning_rate,
+                           build_optimizer, freeze_params, forward_in_batches)
 from torch.utils.data import DataLoader
 import matplotlib
 matplotlib.use('Agg')  # headless backend - avoids requiring a GUI/Tk
@@ -344,6 +345,19 @@ with tab_config:
         else: # None
             st.info(f"No classical backbone. Input data features must match 2^N = {2**nq}.")
 
+        # Fine-tuning a pretrained backbone is opt-in. A frozen backbone trains in
+        # seconds and generalises better than an over-long fine-tune (92% vs 40%
+        # held-out on the ArXiv demo), so it is off by default.
+        finetune_backbone = st.checkbox(
+            "Fine-tune classical backbone (advanced)",
+            value=st.session_state.model_config.get('finetune_backbone', False),
+            key="finetune_backbone",
+            help=("Off: the pretrained backbone is frozen and only the fusion layer, "
+                  "quantum circuit and output head train. On: the backbone is fine-tuned "
+                  "for roughly the first two epochs at a reduced learning rate."),
+            disabled=(cb_type == "None"),
+        )
+
         st.subheader("Save/Load Configuration")
         save_name = st.text_input("Configuration Name", f"config_N{nq}_L{nl}_{cb_type.lower() if cb_type != 'None' else 'direct'}.json", key="save_config_name")
 
@@ -359,6 +373,7 @@ with tab_config:
                 "gnn_input_features": gnn_input_features if cb_type == "GNN" else None,
                 "use_gpu": use_gpu and torch.cuda.is_available(),
                 "quantum_input_size": 2**nq,
+                "finetune_backbone": bool(finetune_backbone),
             }
             st.session_state.model_config = config
             save_model_config(config, save_name)
@@ -1133,24 +1148,18 @@ with tab_train:
                 
                     st.info(f"Starting training for {epochs} epochs...")
                     model = st.session_state.hybrid_model
-                    # Use a lower learning rate for a pretrained classical backbone
-                    # and the requested rate for the quantum layer + output head.
-                    # This lets us fine-tune the backbone without diverging.
-                    backbone = getattr(model, 'classical_backbone', None)
-                    if backbone is not None and len(list(backbone.parameters())) > 0:
-                        # Pretrained transformers need a far smaller step than CNNs, otherwise
-                        # fine-tuning destroys the features before the head can learn.
-                        backbone_lr = backbone_learning_rate(
+                    # Backbone frozen by default; fine-tuning is opt-in (see
+                    # utils.helpers.build_optimizer).
+                    _finetune_requested = bool(
+                        st.session_state.model_config.get('finetune_backbone', False))
+                    optimizer, _bb_params, _fine_tuning = build_optimizer(
+                        model, lr, finetune_backbone=_finetune_requested)
+                    if _bb_params is not None:
+                        _bb_lr = backbone_learning_rate(
                             lr, st.session_state.model_config.get('classical_backbone_type'))
-                        head_params = [p for n, p in model.named_parameters()
-                                       if not n.startswith('classical_backbone.')]
-                        optimizer = torch.optim.Adam([
-                            {'params': list(backbone.parameters()), 'lr': backbone_lr},
-                            {'params': head_params, 'lr': lr},
-                        ])
-                        st.info(f"Fine-tuning backbone at lr={backbone_lr:.6f}, head/quantum at lr={lr:.6f}")
+                        st.info(f"Fine-tuning backbone at lr={_bb_lr:.6f}, head/quantum at lr={lr:.6f}")
                     else:
-                        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+                        st.info(f"Backbone frozen; head/quantum at lr={lr:.6f}")
                     
                     # --- Loss Function ---
                     # Define loss based on task.
@@ -1415,22 +1424,28 @@ with tab_train:
                     except Exception as _probe_err:
                         print(f"[warn] probe forward failed: {_probe_err}")
 
-                    _bb = getattr(model, 'classical_backbone', None)
-                    if _bb is not None and len(list(_bb.parameters())) > 0:
+                    # Backbone frozen by default; fine-tuning is opt-in and gets a
+                    # reduced rate (utils.helpers.build_optimizer).
+                    optimizer, _backbone_params, _fine_tuning = build_optimizer(
+                        model, lr,
+                        finetune_backbone=bool(st.session_state.model_config.get('finetune_backbone', False)),
+                    )
+                    if _backbone_params is None:
+                        _bb = getattr(model, 'classical_backbone', None)
+                        if _bb is not None and len(list(_bb.parameters())) > 0:
+                            st.info(f"Backbone frozen: head/quantum train at lr={lr:.6f}.")
+                    else:
                         _backbone_lr = backbone_learning_rate(
                             lr, st.session_state.model_config.get('classical_backbone_type'))
-                        _head_params = [p for n, p in model.named_parameters()
-                                        if not n.startswith('classical_backbone.')]
-                        optimizer = torch.optim.Adam([
-                            {'params': list(_bb.parameters()), 'lr': _backbone_lr},
-                            {'params': _head_params, 'lr': lr},
-                        ])
-                        st.info(f"Fine-tuning backbone at lr={_backbone_lr:.6f}, "
-                                f"head/quantum at lr={lr:.6f}")
-                    else:
-                        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+                        st.info(f"Fine-tuning backbone at lr={_backbone_lr:.6f} "
+                                f"(capped to ~2 epochs), head/quantum at lr={lr:.6f}")
 
                     global_step = 0
+                    # Cap backbone fine-tuning at roughly two epochs of updates: past
+                    # that the backbone fits the training set (100% train / 40% held-out
+                    # on the ArXiv demo at 15 epochs) instead of helping.
+                    _finetune_step_cap = 0
+                    _finetune_steps_done = 0
                     model.train() # Set model to training mode
                     
                     # Track batch details for run history
@@ -1444,6 +1459,10 @@ with tab_train:
                         num_batches = 0
                         batch_times = []
                         total_batches = len(data_loader)
+                        if _fine_tuning and _finetune_step_cap == 0:
+                            _finetune_step_cap = 2 * max(1, total_batches)
+                            st.info(f"Backbone fine-tuning will stop after {_finetune_step_cap} "
+                                    f"steps (~2 epochs) to avoid overfitting.")
                         
                         for batch_idx, batch in enumerate(data_loader):
                             batch_start_time = time.time()
@@ -1564,6 +1583,16 @@ with tab_train:
                                 torch.nn.utils.clip_grad_norm_(
                                     [p for p in model.parameters() if p.requires_grad], max_norm=1.0)
                                 optimizer.step()
+
+                                # Stop updating the backbone once the cap is reached; the
+                                # head, fusion layer and quantum circuit keep training.
+                                if _fine_tuning and _backbone_params is not None:
+                                    _finetune_steps_done += 1
+                                    if _finetune_steps_done >= _finetune_step_cap:
+                                        freeze_params(_backbone_params)
+                                        _fine_tuning = False
+                                        st.info(f"Backbone frozen after {_finetune_steps_done} "
+                                                f"fine-tuning steps; continuing to train the head.")
                             except Exception as e:
                                 st.error(f"Error during backward pass or optimizer step (Batch {num_batches}, Epoch {epoch+1}): {e}")
                                 st.stop()
@@ -1990,7 +2019,8 @@ with tab_train:
                             model.eval()
                             with torch.no_grad():
                                 if isinstance(features, dict): # For transformer input
-                                    val_outputs = model(features)
+                                    # Batched and moved to the model's device
+                                    val_outputs = forward_in_batches(model, features)
                                 else:
                                     # Use smaller batches for inference
                                     inference_batch_size = min(32, len(features))
@@ -2066,7 +2096,8 @@ with tab_train:
                             model.eval()
                             with torch.no_grad():
                                 if isinstance(features, dict): # For transformer input
-                                    val_outputs = model(features)
+                                    # Batched and moved to the model's device
+                                    val_outputs = forward_in_batches(model, features)
                                 else:
                                     # Use smaller batches for inference
                                     inference_batch_size = min(32, len(features))

@@ -360,6 +360,11 @@ def encode_classification_labels(labels):
     passed through unchanged so regression targets keep their values. Mirrors
     what ``preprocess_csv`` does for the vector path.
 
+    Classes are sorted (``sort=True``) so the index assigned to each class is
+    deterministic. With the default order-of-appearance mapping, extracting the
+    same data twice - or saving a model and predicting on freshly extracted data
+    - could silently permute the classes and turn a 93% model into a 42% one.
+
     Args:
         labels: sequence of labels (strings, ints or floats)
 
@@ -370,7 +375,7 @@ def encode_classification_labels(labels):
     if pd.api.types.is_numeric_dtype(series):
         return torch.tensor(labels), None
 
-    codes, class_names = pd.factorize(series)
+    codes, class_names = pd.factorize(series, sort=True)
     return torch.tensor(codes, dtype=torch.long), [str(name) for name in class_names]
 
 

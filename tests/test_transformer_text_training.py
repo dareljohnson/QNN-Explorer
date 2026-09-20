@@ -41,7 +41,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data.preprocessing import encode_classification_labels  # noqa: E402
-from utils.helpers import resolve_device  # noqa: E402
+from utils.helpers import (build_optimizer, forward_in_batches, freeze_params,
+                           resolve_device)  # noqa: E402
 from utils.tensor_utils import ensure_real  # noqa: E402
 
 
@@ -51,9 +52,19 @@ def test_string_labels_are_factorized_to_class_indices():
     tensor, class_names = encode_classification_labels(labels)
 
     assert tensor.dtype == torch.long, "class indices must be Long for CrossEntropyLoss"
-    assert tensor.tolist() == [0, 1, 0, 2, 0, 1]
-    assert class_names == ["cs.CV", "cs.RO", "cs.CR"]
+    assert class_names == ["cs.CR", "cs.CV", "cs.RO"], "classes must be sorted"
+    assert tensor.tolist() == [1, 2, 1, 0, 1, 2]
     assert len(torch.unique(tensor)) == len(class_names) == 3
+
+
+def test_class_indices_do_not_depend_on_row_order():
+    """Appearance-order mapping silently permuted classes: 93% held-out became 42%."""
+    a, names_a = encode_classification_labels(["cs.CV", "cs.RO", "cs.CR"])
+    b, names_b = encode_classification_labels(["cs.RO", "cs.CR", "cs.CV"])
+
+    assert names_a == names_b == ["cs.CR", "cs.CV", "cs.RO"]
+    # each class must land on the same index whichever order the rows arrive in
+    assert dict(zip(["cs.CV", "cs.RO", "cs.CR"], a.tolist())) ==            dict(zip(["cs.RO", "cs.CR", "cs.CV"], b.tolist())) ==            {"cs.CR": 0, "cs.CV": 1, "cs.RO": 2}
 
 
 def test_string_labels_no_longer_crash_torch_tensor():
@@ -61,7 +72,8 @@ def test_string_labels_no_longer_crash_torch_tensor():
     with pytest.raises(Exception):
         torch.tensor(["cs.CV", "cs.RO"])
 
-    tensor, _ = encode_classification_labels(["cs.CV", "cs.RO"])
+    tensor, names = encode_classification_labels(["cs.CV", "cs.RO"])
+    assert names == ["cs.CV", "cs.RO"], "only these two classes are present, sorted"
     assert tensor.tolist() == [0, 1]
 
 
@@ -85,6 +97,7 @@ def test_three_class_demo_labels_after_factorization():
     labels = ["cs.CV"] * 400 + ["cs.CR"] * 400 + ["cs.RO"] * 400
     tensor, class_names = encode_classification_labels(labels)
 
+    assert class_names == ["cs.CR", "cs.CV", "cs.RO"]
     assert len(torch.unique(tensor)) == 3
     assert len(class_names) == 3
 
@@ -142,3 +155,72 @@ def test_non_transformer_backbones_keep_the_old_step():
 
     for backbone in ("CNN", "GNN", "Regression", None, ""):
         assert backbone_learning_rate(0.005, backbone) == pytest.approx(0.0005)
+
+
+# --------------------------------------------------- optimiser / batching
+class _DummyHybrid(torch.nn.Module):
+    """Minimal stand-in with a classical_backbone attribute."""
+
+    def __init__(self):
+        super().__init__()
+        self.classical_backbone = torch.nn.Linear(4, 4)
+        self.classical_backbone_type = "Transformer"
+        self.head = torch.nn.Linear(4, 2)
+
+    def forward(self, x):
+        return self.head(self.classical_backbone(x))
+
+
+def test_backbone_is_frozen_by_default():
+    model = _DummyHybrid()
+    optimizer, backbone_params, fine_tuning = build_optimizer(model, 0.005, finetune_backbone=False)
+
+    assert backbone_params is None and fine_tuning is False
+    assert all(not p.requires_grad for p in model.classical_backbone.parameters())
+    tuned = [p for group in optimizer.param_groups for p in group["params"]]
+    assert all(p is not model.classical_backbone.weight for p in tuned), "frozen backbone must not be optimised"
+    assert model.head.weight in tuned
+
+
+def test_finetuning_uses_a_smaller_backbone_rate_and_reports_it():
+    model = _DummyHybrid()
+    optimizer, backbone_params, fine_tuning = build_optimizer(model, 0.005, finetune_backbone=True)
+
+    assert fine_tuning is True and backbone_params is not None
+    rates = sorted(g["lr"] for g in optimizer.param_groups)
+    assert rates[0] == pytest.approx(0.00005), "backbone group must use the transformer rate"
+    assert rates[1] == pytest.approx(0.005)
+
+
+def test_freeze_params_stops_updates():
+    layer = torch.nn.Linear(3, 3)
+    freeze_params(list(layer.parameters()))
+    assert all(not p.requires_grad for p in layer.parameters())
+
+    freeze_params(None)  # must tolerate the frozen-by-default case
+
+
+def test_forward_in_batches_handles_dicts_and_batches():
+    calls = []
+
+    class _Recorder(torch.nn.Module):
+        def forward(self, x):
+            calls.append((type(x).__name__, x["input_ids"].shape[0]))
+            return x["input_ids"].float().mean(dim=1, keepdim=True).repeat(1, 2)
+
+    enc = {"input_ids": torch.arange(60).reshape(10, 6),
+           "attention_mask": torch.ones(10, 6, dtype=torch.long)}
+    out = forward_in_batches(_Recorder(), enc, batch_size=4)
+
+    assert out.shape == (10, 2)
+    assert calls == [("dict", 4), ("dict", 4), ("dict", 2)], calls
+
+
+def test_forward_in_batches_handles_plain_tensors():
+    class _Double(torch.nn.Module):
+        def forward(self, x):
+            return x * 2
+
+    features = torch.arange(20).reshape(10, 2).float()
+    out = forward_in_batches(_Double(), features, batch_size=3)
+    assert torch.equal(out, features * 2)

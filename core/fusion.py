@@ -93,7 +93,8 @@ class HybridModel(nn.Module):
             )
         elif backbone_type == 'transformer':
             self.classical_backbone, classical_feature_size = get_transformer_model(
-                model_name=config['classical_model_name']
+                model_name=config['classical_model_name'],
+                pooling=config.get('transformer_pooling', 'mean'),
             )
         elif backbone_type == 'gnn':
             gnn_base, gnn_feature_size = get_gnn_model(
