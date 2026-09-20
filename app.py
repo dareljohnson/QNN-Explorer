@@ -2222,8 +2222,11 @@ with tab_train:
                 except Exception as e:
                     # Log as well as display: a failure here used to be invisible outside
                     # the browser, which is how run history silently stopped being written.
-                    print(f"[training error] {type(e).__name__}: {e}")
-                    traceback.print_exc()
+                    # The import is local so this handler cannot itself fail with
+                    # NameError if module state is ever stale or partially loaded.
+                    import traceback as _traceback
+                    print(f"[training error] {type(e).__name__}: {e}", flush=True)
+                    _traceback.print_exc()
                     st.error(f"Error during training: {e}")
                     # Reset training flag on error
                     st.session_state.training_in_progress = False
